@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'bootstrap'))
 
 from davy_connection import ApiError, call, get_token, load_env  # noqa: E402
 from translator_tool import SYSTEM_PROMPT, register_base_model  # noqa: E402
-from user_context import FUNCTION_ID, VALVE, ensure_valves, load_config  # noqa: E402
+from user_context import FIELDS, FUNCTION_ID, VALVE, ensure_valves, load_config  # noqa: E402
 
 LOG = Path(os.environ['USER_CONTEXT_REQUEST_LOG'])
 QUESTION = 'What is my name, my id and my email?'
@@ -77,7 +77,16 @@ def main():
 
     config = load_config()
     chat_models = [m for m, f in config['models'].items() if f and m not in EMBEDDINGS and m != PRESET_ID]
+    # Stand-in provider: USER_CONTEXT_E2E_MODELS=id1,id2 tests those ids with an all-fields config instead.
+    override = [m.strip() for m in os.environ.get('USER_CONTEXT_E2E_MODELS', '').split(',') if m.strip()]
+    if override:
+        chat_models = override
+        config = {'default': list(FIELDS), 'models': {m: list(FIELDS) for m in override}}
+    fewer_model = chat_models[-1] if override else FEWER_MODEL
     admin = get_token(env, base)
+    stored = call(base, 'GET', f'/api/v1/functions/id/{FUNCTION_ID}/valves', admin)
+    original = json.loads(stored[VALVE])
+    ensure_valves(base, admin, config)
     # Non-admin users can only use models that have a registered row with a read grant.
     for m in chat_models:
         register_base_model(base, admin, m)
@@ -139,20 +148,24 @@ def main():
 
     # 4. One model receives fewer fields.
     fewer = json.loads(json.dumps(config))
-    fewer['models'][FEWER_MODEL] = ['name']
+    fewer['models'][fewer_model] = ['name']
     ensure_valves(base, admin, fewer)
-    ans, entry = chat(base, tokens[USERS[0]['email']], FEWER_MODEL)
+    ans, entry = chat(base, tokens[USERS[0]['email']], fewer_model)
     text, got = block_of(entry)
-    report(set(got) == {'name'} and 'ada.tester' not in text and 'example.com' not in text, f'{FEWER_MODEL} configured for name only: request has only the name')
-    report('ada.tester' not in ans.lower() and 'example.com' not in ans.lower(), f'{FEWER_MODEL} name-only: answer does not reveal id or email')
+    report(set(got) == {'name'} and 'ada.tester' not in text and 'example.com' not in text, f'{fewer_model} configured for name only: request has only the name')
+    report('ada.tester' not in ans.lower() and 'example.com' not in ans.lower(), f'{fewer_model} name-only: answer does not reveal id or email')
     _, entry = chat(base, tokens[USERS[0]['email']], chat_models[0])
     report(set(block_of(entry)[1]) == {'name', 'id', 'email'}, f'other models unaffected (still all three, checked {chat_models[0]})')
     ensure_valves(base, admin, config)
-    _, entry = chat(base, tokens[USERS[0]['email']], FEWER_MODEL)
-    report(set(block_of(entry)[1]) == {'name', 'id', 'email'}, f'{FEWER_MODEL} back to all three after restoring the config')
+    _, entry = chat(base, tokens[USERS[0]['email']], fewer_model)
+    report(set(block_of(entry)[1]) == {'name', 'id', 'email'}, f'{fewer_model} back to all three after restoring the config')
 
     # 5. Embedding and reranker models are untouched.
+    listed = {m['id'] for m in call(base, 'GET', '/api/models', admin).get('data', [])}
     for m in EMBEDDINGS:
+        if m not in listed:
+            print(f'[SKIP] {m}: not offered by this provider')
+            continue
         mark = len(log_lines())
         try:
             call(base, 'POST', '/api/v1/embeddings', admin, {'model': m, 'input': 'hello'})
@@ -165,6 +178,7 @@ def main():
             f'{m}: request reached the provider with only model and input (no system block)',
         )
 
+    ensure_valves(base, admin, original)  # leave the filter config as it was
     print('RESULT: ' + ('PASS' if ok else 'FAIL'))
     return 0 if ok else 1
 
