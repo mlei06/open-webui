@@ -1,0 +1,32 @@
+# Internal Open WebUI stack (Open WebUI only; no Ollama).
+# Run from the repository root:
+#   docker compose --env-file Michael/.env -f Michael/docker-compose.yaml up --build -d
+# Project name is fixed to "michael" so it never collides with the upstream stack.
+name: ${COMPOSE_PROJECT_NAME:-michael}
+
+services:
+  open-webui:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: ${OPEN_WEBUI_IMAGE:-ghcr.io/open-webui/open-webui:main}
+    env_file:
+      - .env
+    environment:
+      ENABLE_OLLAMA_API: "false"
+      # Fallback for the in-container CA path; .env may override it.
+      AIOHTTP_CLIENT_SSL_CERT_FILE: ${AIOHTTP_CLIENT_SSL_CERT_FILE:-/certs/davy-ca-bundle.pem}
+    volumes:
+      - open-webui:/app/backend/data
+      - ./runtime/certs:/certs:ro
+    ports:
+      - ${OPEN_WEBUI_PORT:-3000}:8080
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    restart: unless-stopped
+
+# Reuse the data volume of the original stack so existing chats carry over.
+volumes:
+  open-webui:
+    external: true
+    name: ${OPEN_WEBUI_VOLUME:-open-webui_open-webui}

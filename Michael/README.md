@@ -1,6 +1,6 @@
 # Michael — reproducible Open WebUI stack
 
-Deployment scaffold for the internal Open WebUI environment. No services are deployed yet.
+Deployment scaffold for the internal Open WebUI environment.
 
 Read [onboarding](docs/ONBOARDING.md) before implementation. This repository is public: internal documents must be safe for publication. Keep confidential documents and credentials outside tracked files.
 
@@ -23,6 +23,14 @@ Read [onboarding](docs/ONBOARDING.md) before implementation. This repository is 
 
 ## Runtime setup
 
-Copy `.env.example` to `.env` and supply private values locally. Store approved CA material under `runtime/certs/`. Do not disable TLS verification.
+1. Copy `.env.example` to `.env` and supply private values locally (`OPENAI_API_BASE_URLS` ending in `/v1`, `OPENAI_API_KEYS`, `WEBUI_SECRET_KEY`).
+2. Copy the approved CA bundle to `runtime/certs/davy-ca-bundle.pem`. `runtime/` and `.env` are gitignored. `AIOHTTP_CLIENT_SSL_CERT_FILE` in `.env.example` already points at the in-container mount path. Do not disable TLS verification.
+3. From the repository root, start the stack:
 
-Compose configuration will be added after verifying service versions and bootstrap contracts. There is deliberately no pretend runnable Compose file in this scaffold.
+```
+docker compose --env-file Michael/.env -f Michael/docker-compose.yaml up --build -d
+```
+
+`docker-compose.yaml` runs Open WebUI only (no Ollama; `ENABLE_OLLAMA_API=false`), loads `Michael/.env`, mounts `runtime/certs` read-only at `/certs`, and configures the model connection through `OPENAI_API_BASE_URLS`/`OPENAI_API_KEYS`. It reuses the external Docker volume `open-webui_open-webui` (override with `OPEN_WEBUI_VOLUME`), so create it first on a fresh host (`docker volume create open-webui_open-webui`).
+
+Open WebUI persists connection settings in its database after first start; on an existing volume those saved values win over these environment variables, so change them in Admin Settings (or set `ENABLE_PERSISTENT_CONFIG=false`).

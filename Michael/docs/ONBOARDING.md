@@ -6,7 +6,7 @@ Status: Project onboarded; deployment not implemented or tested.
 
 Coworkers should clone the fork, supply approved secrets and CA material, then build/run a project-specific Compose stack that provisions the same service versions, model presets, tools, and MCP connections. User accounts, chats, uploaded documents, credentials, and database state remain per deployment.
 
-The desired command is `docker compose --env-file Michael/.env -f Michael/compose.yaml up --build -d`; that file does not exist yet. Do not confuse the upstream Compose file (which includes Ollama) with the proposed internal stack.
+The desired command is `docker compose --env-file Michael/.env -f Michael/docker-compose.yaml up --build -d`. Do not confuse the upstream Compose file (which includes Ollama) with the proposed internal stack.
 
 ## Repository
 
@@ -55,7 +55,7 @@ Michael/
   mcp/mcp.json               # project-owned MCP inventory, not auto-imported
   models/                    # managed model/agent preset definitions
   services/                  # local service build contexts
-  compose.yaml
+  docker-compose.yaml
   .env.example               # placeholder-only; no real internal URLs/secrets
   manifests/                 # managed presets, connections, access policy
   prompts/                   # versioned specialized prompts
