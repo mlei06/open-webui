@@ -1,0 +1,14 @@
+{
+  "default": ["name", "id", "email"],
+  "models": {
+    "gemma-4-31b-it": ["name", "id", "email"],
+    "gpt-oss-120b": ["name", "id", "email"],
+    "gpt-oss-120b-thinking": ["name", "id", "email"],
+    "laguna-s-2.1": ["name", "id", "email"],
+    "nemotron-3-super-120b": ["name", "id", "email"],
+    "nemotron-3-ultra": ["name", "id", "email"],
+    "document-translator": ["name", "id", "email"],
+    "bge-reranker-v2-m3": [],
+    "llama-embed-nemotron-8b": []
+  }
+}
