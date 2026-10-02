@@ -5,8 +5,9 @@ The committed Markdown files under knowledge/ are the seed. Through the authenti
 API this script:
 
   1. validates knowledge/manifest.json and reads every file it lists;
-  2. creates each knowledge base that does not exist yet (matched by exact name) with a
-     public read grant, so every user and every model preset can read it;
+  2. creates each knowledge base that does not exist yet (matched by exact name) with public
+     read and write grants, so every user and every model preset can read it and every user can
+     add and edit files; existing ones get the missing grant added, other grants are kept;
   3. uploads each seed file that is missing from the knowledge base and waits until Open
      WebUI has extracted and indexed it;
   4. reports seed files whose live content differs from the committed copy. Users may edit
@@ -34,6 +35,10 @@ from davy_connection import MICHAEL_DIR, ApiError, call, get_token, load_env
 KNOWLEDGE_DIR = MICHAEL_DIR / 'knowledge'
 MANIFEST = KNOWLEDGE_DIR / 'manifest.json'
 PUBLIC_READ = [{'principal_type': 'user', 'principal_id': '*', 'permission': 'read'}]
+# Users may edit the seeded knowledge bases: every signed-in user gets write too. Nothing here ever
+# removes a user's addition, and the grants are only ever added to, never replaced.
+PUBLIC_GRANTS = PUBLIC_READ + [{'principal_type': 'user', 'principal_id': '*', 'permission': 'write'}]
+WANTED = {('user', '*', 'read'), ('user', '*', 'write')}
 UPLOAD_TIMEOUT = 600  # extraction and embedding run synchronously inside the upload request
 
 
@@ -204,18 +209,20 @@ def run(argv=None):
                     report(False, f'{want["name"]}: knowledge base is missing (run without --check)')
                     continue
                 live = call(base, 'POST', '/api/v1/knowledge/create', token,
-                            {'name': want['name'], 'description': want['description'], 'access_grants': PUBLIC_READ})
+                            {'name': want['name'], 'description': want['description'], 'access_grants': PUBLIC_GRANTS})
                 report(True, f'{want["name"]}: knowledge base created')
                 files = {}
             else:
-                if ('user', '*', 'read') in grants_of(live):
-                    report(True, f'{want["name"]}: knowledge base exists with public read')
+                if WANTED <= grants_of(live):
+                    report(True, f'{want["name"]}: knowledge base exists with public read and write')
                 elif args.check:
-                    report(False, f'{want["name"]}: knowledge base has no public read grant (run without --check)')
+                    report(False, f'{want["name"]}: knowledge base lacks the public read or write grant (run without --check)')
                 else:
+                    have = grants_of(live)
+                    add = [g for g in PUBLIC_GRANTS if (g['principal_type'], g['principal_id'], g['permission']) not in have]
                     call(base, 'POST', f'/api/v1/knowledge/{live["id"]}/access/update', token,
-                         {'access_grants': [*(live.get('access_grants') or []), *PUBLIC_READ]})
-                    report(True, f'{want["name"]}: public read grant added')
+                         {'access_grants': [*(live.get('access_grants') or []), *add]})
+                    report(True, f'{want["name"]}: public read and write grants ensured')
                 files = knowledge_files(base, token, live['id'])
 
             for filename, text in want['texts'].items():

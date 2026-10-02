@@ -52,8 +52,22 @@ class DeclarationTests(unittest.TestCase):
         self.assertEqual(ids['office-documents'], ['generate_slide_pptx', 'generate_docx_documents'])
         self.assertEqual(
             set(ids['lenny']),
-            {'server:mcp:doctranslator', 'document_translator', 'server:mcp:employee_directory', 'server:mcp:mail'},
+            {'server:mcp:doctranslator', 'document_translator', 'server:mcp:employee_directory', 'server:mcp:mail',
+             'generate_slide_pptx', 'generate_docx_documents', 'knowledge_base_manager'},  # Lenny has every tool
         )
+
+    def test_lenny_prompt_routes_to_every_tool_it_has(self):
+        text = BY_ID['lenny']['system'].lower()
+        for needle in ('web search', 'employee directory', 'document translation', 'mail drafting', 'powerpoint', 'word document',
+                       'lenovo', 'knowledge base manager tool', 'sops', 'lenny@lenovo.com', 'review and send email'):
+            self.assertIn(needle, text, needle)
+
+    def test_specialist_prompts_do_not_claim_tools_they_lack(self):
+        office = BY_ID['office-agent']['system'].lower()
+        self.assertIn('no web, document-generation or knowledge-base editing tools', office)
+        for k in ('document-translator', 'web-searcher', 'knowledge-base-manager', 'office-documents'):
+            self.assertIn('lenny', BY_ID[k]['system'].lower(), k)  # each points elsewhere for what it cannot do
+        self.assertNotIn('read-only for them', BY_ID['knowledge-base-manager']['system'])  # the SOPs base is editable now
 
     def test_only_search_presets_get_web_search(self):
         for k in BY_ID:
@@ -143,8 +157,11 @@ class DeclarationTests(unittest.TestCase):
 
     def test_no_secrets_or_internal_hosts_in_prompts(self):
         for x in PRESETS:
-            for bad in ('lenovo', 'password', 'http://', 'https://'):
+            for bad in ('password', 'http://', 'https://'):
                 self.assertNotIn(bad, x['system'].lower(), x['id'])
+            # The brand name and the shared sender address are fine; no internal host name is.
+            hosts = re.findall(r'[\w.-]+\.lenovo\.com', x['system'].lower().replace('lenny@lenovo.com', ''))
+            self.assertEqual(hosts, [], x['id'])
 
 
 KB = {'id': 'kb-1', 'name': 'SOPs', 'description': 'seed'}

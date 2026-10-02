@@ -15,13 +15,16 @@
     {
       "id": "lenny",
       "name": "Lenny",
-      "description": "All-in-one assistant: web search, document translation, employee directory and mail drafting.",
+      "description": "All-in-one assistant: web search, document translation, employee directory, mail drafting, Lenovo-styled PowerPoint and Word files, and knowledge bases.",
       "prompt": "lenny.md",
       "tools": [
         {"server": "doctranslator"},
         {"tool": "document_translator"},
         {"server": "employee_directory"},
-        {"server": "mail"}
+        {"server": "mail"},
+        {"tool": "generate_slide_pptx"},
+        {"tool": "generate_docx_documents"},
+        {"tool": "knowledge_base_manager"}
       ],
       "actions": ["mail_review"],
       "capabilities": {
