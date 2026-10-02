@@ -10,12 +10,12 @@ Read [onboarding](docs/ONBOARDING.md) before implementation. This repository is 
 |---|---|
 | `docs/` | Architecture, decisions, setup, and operating instructions; [Filter.md](docs/Filter.md), [Tool.md](docs/Tool.md) and [Events.md](docs/Events.md) explain Open WebUI filters, tools and event functions and the ones we use; [ExternalToolServers.md](docs/ExternalToolServers.md) covers external tool servers (MCP and OpenAPI), `mcp.json` and the employee directory |
 | `mcp/mcp.json` | Declared external tool servers (translator gateway, employee directory) with `mcp.schema.json`; registered by `bootstrap/mcp_servers.py` |
-| `tools/` | Reviewed tool definitions/adapters (`document_translator.py`, `knowledge_base_manager.json` tool export) |
+| `tools/` | Reviewed tool definitions/adapters (`document_translator.py`, `knowledge_base_manager.json` tool export; `generate_slides.py` and `generate_documents.py`, the Lenovo-styled PowerPoint and Word generators) |
 | `knowledge/` | Seed knowledge bases: `manifest.json` names each knowledge base, its description and files; the Markdown files (`sops/`) are the committed copy |
 | `functions/` | Open WebUI functions (`user_context.py` filter, `audit_log.py` event function) |
 | `prompts/` | Versioned system prompts, one file per preset |
 | `models/` | `presets.json` declares the model presets; `user-context.json` sets which user fields each model receives |
-| `bootstrap/` | Authenticated, idempotent provisioning (`build_ca_bundle.py`, `davy_connection.py`, `xai_connection.py`, `mcp_servers.py`, `presets.py`, `knowledge_bases.py`, `kb_manager_tool.py`, `pptx_to_markdown.py`, `seed_employees.py`, `translator_tool.py`, `user_context.py`, `audit_log.py`, `branding.py`) |
+| `bootstrap/` | Authenticated, idempotent provisioning (`build_ca_bundle.py`, `davy_connection.py`, `xai_connection.py`, `mcp_servers.py`, `presets.py`, `knowledge_bases.py`, `kb_manager_tool.py`, `pptx_to_markdown.py`, `seed_employees.py`, `translator_tool.py`, `office_tools.py`, `user_context.py`, `audit_log.py`, `branding.py`) |
 | `services/` | Local MCP/bridge/worker container build contexts (a checkout of the employee-directory source can sit here; see `EMPLOYEE_DIRECTORY_SRC`) |
 | `tests/` | Filter and audit-log unit tests, throwaway-stack end-to-end check, model-request log proxy; `fixtures/` holds synthetic test files only |
 | `runtime/` | Ignored certificates, secrets, local data |
@@ -106,7 +106,7 @@ How external tool servers work in Open WebUI, the `mcp.json` reference, how to a
 
 ## Bootstrap: model presets
 
-`models/presets.json` declares five ready-made models; `bootstrap/presets.py` creates or updates them through the admin API (same conventions as the other scripts: admin credentials from `.env`, PASS/FAIL lines, secrets never printed, standard library only). Each preset has its system prompt (`prompts/<name>.md`), native function calling, its tool list, capabilities, built-in tools, default features and the `user_context` filter attached.
+`models/presets.json` declares ready-made models; `bootstrap/presets.py` creates or updates them through the admin API (same conventions as the other scripts: admin credentials from `.env`, PASS/FAIL lines, secrets never printed, standard library only). Each preset has its system prompt (`prompts/<name>.md`), native function calling, its tool list, capabilities, built-in tools, default features and the `user_context` filter attached.
 
 | Preset (id) | Tools | Web search | Notes |
 |---|---|---|---|
@@ -115,6 +115,7 @@ How external tool servers work in Open WebUI, the `mcp.json` reference, how to a
 | Web Searcher (`web-searcher`) | built-in web search and time only | on by default | sees only the user's name; answers with sources |
 | Office Agent (`office-agent`) | employee directory and mail | off | drafts mail for the user to review and send; can attach chat files through the mail tool |
 | Knowledge Base Manager (`knowledge-base-manager`) | Knowledge Base Manager tool, built-in files, time | off | turns an attached file into a knowledge base entry; asks before overwriting or deleting; see [Bootstrap: knowledge bases](#bootstrap-knowledge-bases) |
+| Office Documents (`office-documents`) | the two generator tools of the next section | off | produces Lenovo-styled decks and Word documents; asks what is missing, then returns a download link; chat files are source material (file context on); like every preset it gets the SOPs knowledge base |
 
 Every preset also gets the knowledge bases listed in the top-level `knowledge_bases` of `presets.json` (today `sops`, an id from `knowledge/manifest.json`; a preset can override the list with its own `knowledge_bases`) and the built-in knowledge tool, which is how a model with native function calling searches them. Knowledge a user attached to a preset in the app is kept. A base that is not created yet is a `[NOTE]`; run `knowledge_bases.py`, then re-run `presets.py`.
 
@@ -132,6 +133,7 @@ python3 Michael/bootstrap/user_context.py
 python3 Michael/bootstrap/translator_tool.py
 python3 Michael/bootstrap/knowledge_bases.py
 python3 Michael/bootstrap/kb_manager_tool.py
+python3 Michael/bootstrap/office_tools.py
 python3 Michael/bootstrap/presets.py --check   # exit 1 if a preset differs
 python3 Michael/bootstrap/presets.py
 ```
@@ -155,6 +157,53 @@ python3 Michael/bootstrap/presets.py                   # attach the knowledge ba
 To add a document to the seed: put the Markdown under `knowledge/`, list it in `manifest.json`, run the script. Users can also drop a new file into a chat with the **Knowledge Base Manager** preset and ask it to create an entry; entries made that way live in the app's data volume and are not committed.
 
 **Knowledge Base Manager tool.** `tools/knowledge_base_manager.json` is an Open WebUI tool export, imported by `bootstrap/kb_manager_tool.py` (compared by source, so re-runs change nothing) and readable by every user. It talks to Open WebUI's own API at `http://127.0.0.1:8080` (inside the container) with the signed-in user's own token, so it can only do what that user may do: it has no valves, stores no secrets and logs nothing. Reviewed behaviour: all deletions of files and knowledge bases need `confirm=true`, and a non-empty knowledge base needs `allow_nonempty=true` as well; the model, not the user interface, supplies those flags, so the preset prompt makes it ask the user first. Deleting a file removes it from every knowledge base that uses it. `delete_knowledge_directory` has no confirmation flag (its files move to the parent folder), and `upsert`/`update` replace file content without one. New knowledge bases are private to the user. The seed knowledge base has public read only, so a non-admin user cannot change it through the tool; give a group write access in the app if you want that. `tests/test_knowledge_bases.py` holds the unit tests.
+
+## Bootstrap: office document generators (Office Documents preset)
+
+Two workspace tools make real Office files and put them in the user's own file store, with a download link in the chat: `tools/generate_slides.py` (tool id `generate_slide_pptx`, function `generate_slides`, native PowerPoint from a JSON spec) and `tools/generate_documents.py` (`generate_docx_documents`, function `generate_document`, native Word from Markdown with frontmatter or JSON). They are the upstream exports by IANUSTEC (MIT, `Generate Slides` 1.0.3 and `Generate Documents` 1.2.0), kept as tracked source. Each file header lists every deviation from the export: the Lenovo theme, the logo, empty/reduced frontmatter `requirements`, and (documents tool) the `await`s that current Open WebUI needs; the originals stay untouched on their source machine. The **Office Documents** preset (`prompts/office-documents.md`) attaches both; its prompt covers what to ask before generating, how to deliver the link and what not to invent, and leaves the look to the tools.
+
+`bootstrap/office_tools.py` (same conventions as the other scripts; `--check` changes nothing and exits 1 on drift) creates or updates both tools with a public read grant, stores the logo in their valves, points the Word tool's `letterhead_dirs` at a folder that does not exist (see Safety) and checks that each tool exposes its function. Run it before `presets.py`:
+
+```
+python3 Michael/bootstrap/office_tools.py --check
+python3 Michael/bootstrap/office_tools.py
+python3 Michael/bootstrap/presets.py
+```
+
+**Lenovo style is the default; nothing for the model to choose.** Values come from `branding/tokens.json`:
+
+| Element | Slides | Word |
+|---|---|---|
+| Type | Segoe UI (headings and body), the first of the tokens font stack; Office has no fallback stack, so a machine without Segoe UI substitutes its default | same |
+| Surfaces / headings | dark neutral ramp: cover, section and closing slides on `#191019`, cards and tables on `#2D2130` | headings `#191019`, accent (table headers, rules, list marks, KPI values) `#221827` |
+| Lenovo red `#E1251B` | the accent only: eyebrows, bullets, numbers, icons, chart series 1; on dark slides a lightened tint (`#F0665E`) keeps 4.5:1 for small text | cover rule and kicker only; never behind text |
+| Links, callouts | n/a | links `#1E40AF`; callout borders from the semantic tokens (info blue, warning `#C2410C`, success `#047857`, danger `#B91C1C`) |
+| Logo | cover (top left) and every footer | running header (not on the cover page) and the cover |
+| Other looks | `theme` still accepts `midnight`, `forest`, `ocean`, `slate` and the other upstream palettes; `auto` now means `lenovo` instead of guessing from the content | every template (`report`, `memo`, `letter`, `proposal`, `minutes`, `whitepaper`, `blank`) uses the Lenovo palette; `styles.accent`, `heading_color` and `font` in a document's frontmatter still override it |
+
+The tool descriptions the model reads say to leave theme, colours, fonts and logo alone unless the user asks, so the preset prompt does not repeat style rules.
+
+**Where the logo comes from.** The tools run inside the container, which mounts only `runtime/certs`, so they cannot read `runtime/brand/`. `office_tools.py` reads `runtime/brand/lenovo-logo.svg` (or `.png`; the same file `branding.py` uses and `--init-assets` provides), rasterizes an SVG to PNG with the standard library (rect and path elements only; python-pptx and python-docx cannot take SVG) and stores the PNG base64 in each tool's `brand_logo_png_b64` valve. Nothing is fetched from the network and no brand binary is committed. If the file is missing, or is the placeholder (it draws text, which the rasterizer refuses), the script prints a `[NOTE]` and decks and documents are produced without a logo (the slide cover falls back to an icon). Re-run the script after replacing the logo.
+
+**Packages.** `python-pptx`, `python-docx`, `pillow`, `lxml`, `PyYAML` and `markdown-it-py` ship in the Open WebUI image. Only `mdit-py-plugins` (Word Markdown input) does not: Open WebUI pip-installs it when the tool is saved, so the container needs access to a Python package index at that moment (or install it in the image). A failed install makes Open WebUI refuse the Word tool; the slides tool installs nothing.
+
+**Delivery.** Files are saved through Open WebUI's Files API as the signed-in user, so the link `/api/v1/files/<id>/content` works for that user (and admins) only. Both tools also have a fallback that writes to the cache folder (`/cache/files/<name>`), which any signed-in user can open if they know the name; it is used only when the Files API save fails, and the file names carry a random suffix.
+
+**Safety review (what the tools do, and what to keep in mind).**
+
+- No secrets. Nothing is read from the environment except the optional `UPLOAD_DIR`; there are no credentials in the tools. Valves: `unsplash_access_key`, `image_generation_*` and the Word tool's `image_generation_url`/`image_generation_api_key` are empty by default and stay empty.
+- Network. Both tools download an image when the model puts an `image_url` (or `![alt](https://...)`) in the spec, following redirects, from inside the container: a prompt-injected spec can make the server request internal addresses (other compose services, host services). The response is only embedded if it decodes as an image, so little comes back, but it is a request-forgery path. The preset prompt tells the model not to use image links, and the web-search and mail tools are not attached to this preset. Unsplash and AI image generation only run when configured (`image_hint`/`image_generate`; the Word tool then uses Open WebUI's image router with the user's prompt).
+- Files. Reads: a chat-attached `.docx` as letterhead, by id from the chat. The Word tool would also scan the server's upload folders (`/mnt/uploads`, `UPLOAD_DIR`, `/app/backend/data/uploads`) for a letterhead by file name, which could expose another user's `.docx` header and footer; `office_tools.py` therefore sets `letterhead_dirs` to a folder that does not exist (a letterhead attached to the chat still works). Writes: the generated file through the Files API, and the cache fallback above.
+- Execution. No `eval`, `exec` or subprocess in the tools; the spec is data (JSON, or Markdown parsed by markdown-it/PyYAML `safe_load`).
+- Prompt-injection: text from an attached file can end up in a deck or document, which is the point; nothing else is reachable from the tools.
+
+**Tests.** `tests/test_office_tools.py` (the rasterizer, the bootstrap against a fake API, and, when the packages are installed, a real deck and Word file read back as Office XML: colours, fonts, logo, themes, the async save regression):
+
+```
+python3 Michael/tests/test_office_tools.py   # tool tests are skipped without the packages
+uv run --no-project --with python-pptx --with python-docx --with pillow --with pydantic --with httpx \
+   --with markdown-it-py --with mdit-py-plugins --with pyyaml --with lxml python Michael/tests/test_office_tools.py
+```
 
 ## Bootstrap: user context for every model
 

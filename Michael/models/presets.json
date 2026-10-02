@@ -141,6 +141,32 @@
       "builtin_tools": ["time", "user_input", "files"],
       "default_features": [],
       "params": {"temperature": 0.2}
+    },
+    {
+      "id": "office-documents",
+      "name": "Office Documents",
+      "description": "Produces Lenovo-styled PowerPoint decks and Word documents and returns the file to download.",
+      "prompt": "office-documents.md",
+      "tools": [
+        {"tool": "generate_slide_pptx"},
+        {"tool": "generate_docx_documents"}
+      ],
+      "capabilities": {
+        "file_upload": true,
+        "file_context": true,
+        "web_search": false,
+        "image_generation": false,
+        "code_interpreter": false,
+        "terminal": false,
+        "memory": false,
+        "builtin_tools": true,
+        "citations": false,
+        "status_updates": true,
+        "usage": false
+      },
+      "builtin_tools": ["time", "user_input"],
+      "default_features": [],
+      "params": {"temperature": 0.3}
     }
   ]
 }

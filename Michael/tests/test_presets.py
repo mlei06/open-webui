@@ -5,6 +5,7 @@
 
 import copy
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -33,10 +34,10 @@ def load(doc, prompts=None):
 
 
 class DeclarationTests(unittest.TestCase):
-    def test_five_presets_with_expected_ids(self):
+    def test_presets_with_expected_ids(self):
         self.assertEqual(
             [x['id'] for x in PRESETS],
-            ['lenny', 'document-translator', 'web-searcher', 'office-agent', 'knowledge-base-manager'],
+            ['lenny', 'document-translator', 'web-searcher', 'office-agent', 'knowledge-base-manager', 'office-documents'],
         )
 
     def test_default_base_model_is_gemma_not_grok(self):
@@ -48,6 +49,7 @@ class DeclarationTests(unittest.TestCase):
         self.assertEqual(ids['web-searcher'], [])
         self.assertEqual(ids['knowledge-base-manager'], ['knowledge_base_manager'])
         self.assertEqual(ids['office-agent'], ['server:mcp:employee_directory', 'server:mcp:mail'])
+        self.assertEqual(ids['office-documents'], ['generate_slide_pptx', 'generate_docx_documents'])
         self.assertEqual(
             set(ids['lenny']),
             {'server:mcp:doctranslator', 'document_translator', 'server:mcp:employee_directory', 'server:mcp:mail'},
@@ -124,6 +126,20 @@ class DeclarationTests(unittest.TestCase):
         text = BY_ID['knowledge-base-manager']['system'].lower()
         for needle in ('<attached_files>', 'confirm', 'overwrite', 'delete', 'indexed', 'duplicate', 'markdown'):
             self.assertIn(needle, text, needle)
+
+    def test_office_documents_preset(self):
+        w = want('office-documents')
+        self.assertTrue(w['meta']['capabilities']['file_upload'])
+        self.assertEqual(w['meta']['actionIds'], [])
+        self.assertEqual(w['meta']['defaultFeatureIds'], [])
+        text = BY_ID['office-documents']['system']
+        self.assertIn('<user_context>', text)
+        # the style lives in the tools: the prompt must not restate colours or fonts
+        for bad in ('#', 'segoe', 'font:'):
+            self.assertNotIn(bad, text.lower())
+        self.assertIsNone(re.search(r'\bred\b', text.lower()))
+        for tool_id in ('generate_slide_pptx', 'generate_docx_documents'):
+            self.assertTrue(any(r.get('tool') == tool_id for r in BY_ID['office-documents']['tools']))
 
     def test_no_secrets_or_internal_hosts_in_prompts(self):
         for x in PRESETS:
@@ -215,9 +231,8 @@ class MatchTests(unittest.TestCase):
             self.assertFalse(p.matches(m, want('lenny')))
 
     def test_missing_refs_notes_unregistered_mail(self):
-        got = p.missing_refs(
-            PRESETS, FILTERS, {'doctranslator', 'employee_directory'}, {'document_translator', 'knowledge_base_manager'}, {'user_context'}
-        )
+        tools = {'document_translator', 'knowledge_base_manager', 'generate_slide_pptx', 'generate_docx_documents'}
+        got = p.missing_refs(PRESETS, FILTERS, {'doctranslator', 'employee_directory'}, tools, {'user_context'})
         self.assertEqual({(a, c, d) for a, _, c, d in got}, {('lenny', 'mail', False), ('office-agent', 'mail', False)})
         got = p.missing_refs(PRESETS, FILTERS, {'mail'}, set(), set())
         self.assertTrue(any(k == 'filter function' for _, k, _, _ in got))

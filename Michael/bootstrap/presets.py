@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Idempotently create the Open WebUI model presets declared in models/presets.json.
 
-Each preset (Lenny, Document Translator, Web Searcher, Office Agent, Knowledge Base Manager) is a custom model
-with its system prompt (prompts/<name>.md), the tool servers and workspace tools it may
+Each preset (Lenny, Document Translator, Web Searcher, Office Agent, Knowledge Base Manager, Office Documents)
+is a custom model with its system prompt (prompts/<name>.md), the tool servers and workspace tools it may
 reach, capabilities, built-in tools, default features and the user-context filter
 already filled out. Through the authenticated admin API this script:
 
@@ -457,7 +457,7 @@ def run(argv=None):
             elif optional:
                 print(f'[NOTE] {pid}: optional {kind} "{ref}" is not registered yet; the preset uses it once it is (mcp_servers.py)')
             else:
-                print(f'[NOTE] {pid}: {kind} "{ref}" is not registered yet: run bootstrap/mcp_servers.py and bootstrap/translator_tool.py')
+                print(f'[NOTE] {pid}: {kind} "{ref}" is not registered yet: run bootstrap/mcp_servers.py, translator_tool.py and office_tools.py')
 
         if any('web_search' in p['default_features'] or p['capabilities'].get('web_search') for p in presets):
             state = web_search_enabled(base, token)
