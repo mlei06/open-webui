@@ -8,15 +8,15 @@ Read [onboarding](docs/ONBOARDING.md) before implementation. This repository is 
 
 | Path | Purpose |
 |---|---|
-| `docs/` | Architecture, decisions, setup, and operating instructions; [Filter.md](docs/Filter.md) and [Tool.md](docs/Tool.md) explain Open WebUI filters and tools and the ones we use; [ExternalToolServers.md](docs/ExternalToolServers.md) covers external tool servers (MCP and OpenAPI), `mcp.json` and the employee directory |
+| `docs/` | Architecture, decisions, setup, and operating instructions; [Filter.md](docs/Filter.md), [Tool.md](docs/Tool.md) and [Events.md](docs/Events.md) explain Open WebUI filters, tools and event functions and the ones we use; [ExternalToolServers.md](docs/ExternalToolServers.md) covers external tool servers (MCP and OpenAPI), `mcp.json` and the employee directory |
 | `mcp/mcp.json` | Declared external tool servers (translator gateway, employee directory) with `mcp.schema.json`; registered by `bootstrap/mcp_servers.py` |
 | `tools/` | Reviewed tool definitions/adapters (`document_translator.py`) |
-| `functions/` | Open WebUI functions (`user_context.py` filter) |
+| `functions/` | Open WebUI functions (`user_context.py` filter, `audit_log.py` event function) |
 | `prompts/` | Versioned specialist system prompts |
 | `models/` | Model/agent preset manifests; `user-context.json` sets which user fields each model receives |
-| `bootstrap/` | Authenticated, idempotent provisioning (`build_ca_bundle.py`, `davy_connection.py`, `xai_connection.py`, `mcp_servers.py`, `seed_employees.py`, `translator_tool.py`, `user_context.py`, `branding.py`) |
+| `bootstrap/` | Authenticated, idempotent provisioning (`build_ca_bundle.py`, `davy_connection.py`, `xai_connection.py`, `mcp_servers.py`, `seed_employees.py`, `translator_tool.py`, `user_context.py`, `audit_log.py`, `branding.py`) |
 | `services/` | Local MCP/bridge/worker container build contexts (a checkout of the employee-directory source can sit here; see `EMPLOYEE_DIRECTORY_SRC`) |
-| `tests/` | Filter unit tests, throwaway-stack end-to-end check, model-request log proxy; `fixtures/` holds synthetic test files only |
+| `tests/` | Filter and audit-log unit tests, throwaway-stack end-to-end check, model-request log proxy; `fixtures/` holds synthetic test files only |
 | `runtime/` | Ignored certificates, secrets, local data |
 | `.env.example` | Placeholder-only runtime configuration template |
 
@@ -160,6 +160,10 @@ Limits: only chat requests that go through Open WebUI's chat pipeline are affect
 Non-admin users only see models that have a registered row with a read grant; the end-to-end script registers the test models itself, and the live instance must already have them (the translator bootstrap does the same for its base model).
 
 Limits: files over 8 MiB are refused with a clear message (the gateway's inline limit); the gateway returns only a generic message when the translator rejects a submission (for example HTTP 422); job ids are not scoped per user because all users share one translator key. The key is stored in the tool valves and the MCP connection (admin-readable) and is loaded into the container by compose through `.env`.
+
+## Bootstrap: audit log (event function)
+
+`bootstrap/audit_log.py` installs and enables `functions/audit_log.py`, an **event function** that appends one JSON line per administrative or security event (sign-ins, user and role changes, config, plugin and model changes, startup) to `<data volume>/audit/events-YYYY-MM-DD.jsonl`. It records metadata only, never chat content. Same conventions as the other bootstrap scripts; re-runs change nothing and leave the valves alone. What event functions are, how they behave (lifecycle, errors, several workers) and the use cases we ranked are in [docs/Events.md](docs/Events.md); it was proven on a throwaway stack only, so review its valves before applying it to the live instance.
 
 ## Bootstrap: Lenovo branding
 

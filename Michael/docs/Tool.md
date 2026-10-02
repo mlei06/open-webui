@@ -26,6 +26,8 @@ For a coworker who has not used Open WebUI plugins before. Concepts come from th
 
 Rule of thumb: prefer a separate server when you can, and a workspace tool only when you need what lives inside Open WebUI.
 
+Not to be confused with **events**: a tool's `__event_emitter__` sends status messages and citations to the chat UI while it runs, whereas an *event function* reacts to system events (sign-ins, config changes, startup) and cannot be called by a model. See [Events.md](Events.md). Note that the event catalog has no tool-call event, so auditing what a tool was asked has to happen inside the tool or its server.
+
 ## 2. How a Python workspace tool works
 
 A tool file defines a class `Tools`. Every public method becomes a function the model can call.
