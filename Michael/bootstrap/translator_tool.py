@@ -20,12 +20,13 @@ whether that connection is registered yet.
 Reuses the helpers of davy_connection.py. Standard library only. Secrets are
 never printed: only fixed status text is written to the terminal. Settings come
 from Michael/.env (see .env.example): TRANSLATOR_GATEWAY_URL,
-TRANSLATOR_API_KEY, TRANSLATOR_BASE_MODEL, optional TRANSLATOR_ID.
+TRANSLATOR_API_KEY, optional TRANSLATOR_ID; the base model is the presets' one (PRESETS_BASE_MODEL,
+then TRANSLATOR_BASE_MODEL, then models/presets.json).
 """
 
 import sys
 
-from davy_connection import MICHAEL_DIR, ApiError, call, get_token, load_env
+from davy_connection import MICHAEL_DIR, ApiError, base_model_of, call, get_token, load_env
 
 TOOL_ID = 'document_translator'
 TOOL_FILE = MICHAEL_DIR / 'tools' / 'document_translator.py'
@@ -36,16 +37,10 @@ PUBLIC_READ = [{'principal_type': 'user', 'principal_id': '*', 'permission': 're
 def settings(env):
     url = (env.get('TRANSLATOR_GATEWAY_URL') or '').strip()
     key = (env.get('TRANSLATOR_API_KEY') or '').strip()
-    base_model = (env.get('TRANSLATOR_BASE_MODEL') or '').strip()
-    missing = [
-        n
-        for n, v in (
-            ('TRANSLATOR_GATEWAY_URL', url),
-            ('TRANSLATOR_API_KEY', key),
-            ('TRANSLATOR_BASE_MODEL', base_model),
-        )
-        if not v
-    ]
+    # Same base model as the presets (PRESETS_BASE_MODEL, then TRANSLATOR_BASE_MODEL, then the
+    # committed default), so the model the presets use is the one registered for every user.
+    base_model = base_model_of(env)
+    missing = [n for n, v in (('TRANSLATOR_GATEWAY_URL', url), ('TRANSLATOR_API_KEY', key)) if not v]
     if missing:
         raise ApiError('missing in Michael/.env: ' + ', '.join(missing))
     if not url.startswith(('http://', 'https://')):

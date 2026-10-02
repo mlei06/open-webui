@@ -14,6 +14,11 @@ services:
       - .env
     environment:
       ENABLE_OLLAMA_API: "false"
+      # Accounts are created only by an admin. The first account on a fresh volume is still allowed (Open WebUI lets
+      # the first sign-up through and makes it the admin). Saved settings override these, so bootstrap/accounts.py
+      # (run by provision.py) also saves them.
+      ENABLE_SIGNUP: ${ENABLE_SIGNUP:-false}
+      DEFAULT_USER_ROLE: ${DEFAULT_USER_ROLE:-user}
       # Encrypt tool valves (the translator API key) at rest. Needs a stable WEBUI_SECRET_KEY.
       ENABLE_VALVE_ENCRYPTION: ${ENABLE_VALVE_ENCRYPTION:-true}
       # Fallback for the in-container CA path; .env may override it.
@@ -115,6 +120,9 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
       MAIL_SMTP_CA_FILE: ${MAIL_SMTP_CA_FILE:-}                     # in-container path, e.g. /certs/ca-bundle.pem
+      # false keeps STARTTLS but does not verify the relay's certificate or host name (for a relay whose
+      # certificate cannot be verified); the service logs a warning. See .env.example for the risk.
+      MAIL_SMTP_TLS_VERIFY: ${MAIL_SMTP_TLS_VERIFY:-true}
     volumes:
       - mail-service-data:/data
       - ./runtime/certs:/certs:ro

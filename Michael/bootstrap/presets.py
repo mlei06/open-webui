@@ -40,7 +40,7 @@ import json
 import sys
 import time
 
-from davy_connection import MICHAEL_DIR, ApiError, call, get_token, load_env
+from davy_connection import MICHAEL_DIR, ApiError, base_model_of, call, get_token, load_env
 from knowledge_bases import ConfigError as ManifestError
 from knowledge_bases import find_knowledge_base, list_knowledge_bases, load_manifest
 
@@ -396,9 +396,7 @@ def run(argv=None):
         print(f'[FAIL] {e}')
         print('RESULT: FAIL')
         return 1
-    base_model = (
-        args.base_model or env.get('PRESETS_BASE_MODEL') or env.get('TRANSLATOR_BASE_MODEL') or doc['base_model']
-    ).strip()
+    base_model = base_model_of(env, args.base_model, doc['base_model'])
     report(True, f'presets.json is valid ({len(presets)} preset(s)); base model {base_model}')
 
     try:

@@ -71,6 +71,11 @@ def norm(url):
 
 
 def get_token(env, base):
+    # provision.py signs in once (or creates the first admin on a fresh volume) and hands the
+    # session token to the scripts it runs; an admin API key saved in an old .env is not valid
+    # on a fresh volume, so this wins over it.
+    if env.get('OPEN_WEBUI_ADMIN_TOKEN'):
+        return env['OPEN_WEBUI_ADMIN_TOKEN']
     if env.get('OPEN_WEBUI_ADMIN_API_KEY'):
         return env['OPEN_WEBUI_ADMIN_API_KEY']
     email, pw = env.get('OPEN_WEBUI_ADMIN_EMAIL'), env.get('OPEN_WEBUI_ADMIN_PASSWORD')
@@ -80,6 +85,26 @@ def get_token(env, base):
     if not isinstance(res, dict) or not res.get('token'):
         raise ApiError('sign-in returned no token')
     return res['token']
+
+
+def default_base_model():
+    """The committed default base model of models/presets.json."""
+    try:
+        return json.loads((MICHAEL_DIR / 'models' / 'presets.json').read_text())['base_model'].strip()
+    except (OSError, ValueError, KeyError, AttributeError):
+        raise ApiError('models/presets.json has no readable base_model') from None
+
+
+def base_model_of(env, override=None, default=None):
+    """Base model of every preset and of the translator tool: one setting, in this order.
+
+    --base-model (override), PRESETS_BASE_MODEL, TRANSLATOR_BASE_MODEL, then the default
+    (given, else models/presets.json).
+    """
+    for value in (override, env.get('PRESETS_BASE_MODEL'), env.get('TRANSLATOR_BASE_MODEL')):
+        if value and value.strip():
+            return value.strip()
+    return (default or '').strip() or default_base_model()
 
 
 def desired_connections(env):
