@@ -114,7 +114,7 @@ curl -sS -X POST "$OWUI/api/v1/tools/id/document_translator/valves/update" \
   -d '{"GATEWAY_URL":"<gateway /mcp url>","TRANSLATOR_API_KEY":"<shared key, from your secret store>"}'
 ```
 
-Reading valves returns secrets to an admin, so keep that output out of logs and tickets.
+Reading valves returns secrets (decrypted) to an admin, so keep that output out of logs and tickets.
 
 ## 5. Register an MCP server
 
@@ -149,31 +149,31 @@ A failure usually means the URL is unreachable from the container, the key is wr
 
 ## 6. Tools we use: Document Translator
 
-> **Note: the file is being reworked.** Another worker is rebuilding `Michael/tools/document_translator.py` on a separate branch to follow native conventions. This section describes the version on `main` at the time of writing; names, valves and behavior may change after the rework lands. Re-check against the file.
-
 ### The workspace tool
 
-File: `Michael/tools/document_translator.py` (id `document_translator`, version 0.1.0). It translates a chat attachment through the translator gateway and hands the result back as a download.
+File: `Michael/tools/document_translator.py` (id `document_translator`, version 0.2.0, written for Open WebUI 0.11.4). It translates a chat attachment through the translator gateway and hands the result back as a download.
 
 **What the model passes.** Only ids and language codes, never file content:
 
-- `translate_attachment(file_id, target_language, source_language="auto")`: `file_id` is the id from the `<attached_files>` tag; `target_language` a short code such as `zh`, `en`, `fr`, `de`, `ja`. Language codes are checked (letters, digits, `_`, `-`, at most 35 characters).
+- `translate_attachment(target_language, file_id=None, source_language="auto")`: `target_language` is a short code such as `zh`, `en`, `ja`, `es` (checked: letters, digits, `_`, `-`, at most 35 characters). `file_id` is optional: Open WebUI injects the message's attachments (`__files__`), so with exactly one attachment the tool uses it; with several it answers with the available ids and the model calls again with `file_id` (an explicit id, or an unambiguous file name, always works).
 - `deliver_translation(job_id)`: fetches a job that was still running when the first call returned.
 
 **What the tool does on the server** (`translate_attachment`):
 
-1. Reads the attachment bytes from Open WebUI's own file store, after checking the caller may access that file (owner, admin, or listed in the chat's `__files__`). It tolerates the model passing the file name instead of the id when that is unambiguous.
+1. Reads the attachment bytes from Open WebUI's own file store, after checking the caller may access that file (it is attached to this message, or the caller owns it).
 2. Refuses files over **8 MiB** (the gateway's inline limit) with a clear message.
-3. Calls the gateway's `translate_document` over Streamable HTTP JSON-RPC with `Authorization: Bearer <key>` (filename, base64 content, target, source, a random `submission_id`, and optional `translator_id`).
+3. Opens a real MCP client session to the gateway (Streamable HTTP, `initialize` handshake, `Authorization: Bearer <key>`) using the `mcp` SDK that ships with Open WebUI (no `requirements:` line, so nothing is pip-installed at save time), and calls `translate_document` (filename, base64 content, target, source, a random `submission_id`, optional `translator_id`).
 4. Polls `get_translation_status` every `POLL_INTERVAL_SECONDS` (3) until done, up to `MAX_WAIT_SECONDS` (240, kept under the 300 s tool-call timeout), sending status events to the UI.
 5. Fetches `get_translation_result`, checks the SHA-256 of the returned file, and stores it through Open WebUI's Files API (`POST /api/v1/files/?process=false`) using the **caller's own token**.
-6. Emits a `files` event and returns a markdown download link `/api/v1/files/<id>/content?attachment=true`, which the model gives to the user.
+6. Emits a `files` event and returns a dict (`status`, `file_name`, `download_url` = `/api/v1/files/<id>/content?attachment=true`, and a `message` telling the model to give the user that link). Progress is shown with `status` events.
 
 File bytes are never part of any model request.
 
 **Gateway and key.** Valves: `GATEWAY_URL` (the gateway `/mcp` URL as seen from the Open WebUI server), `TRANSLATOR_API_KEY` (**one shared key** for all users; masked in the UI), `OPEN_WEBUI_URL` (empty means `http://127.0.0.1:$PORT`), `TRANSLATOR_ID` (empty means the gateway default), `POLL_INTERVAL_SECONDS`, `MAX_WAIT_SECONDS`. Because the key is shared, all users share one translator identity and job ids are not scoped per user.
 
-**Failure behavior.** Every failure returns text starting `Translation failed:` with a safe reason instead of raising: not configured (valves empty), file not found or not accessible (lists the chat's attachments), over 8 MiB, empty file, gateway unreachable, key rejected (401/403), other HTTP errors, unreadable gateway response, failed checksum, no user session to store the file, or a failed translation (with the gateway's error code). When the gateway rejects a submission it returns only a generic message, so the tool appends the supported languages and formats from `translation_capabilities` when available. If the job outlives the wait, the tool returns the job id and tells the model to use `deliver_translation` later.
+**Valves are encrypted at rest.** With `ENABLE_VALVE_ENCRYPTION=true` the server stores tool valves encrypted (verified: `backend/open_webui/utils/valves.py`, `env.py`; `Michael/docker-compose.yaml` sets it, default `true`, override in `Michael/.env`). The encryption key is derived from `WEBUI_SECRET_KEY`, so that value must be set and **stable**. What it means for rotating `WEBUI_SECRET_KEY`: saved valve values (including `TRANSLATOR_API_KEY`) can no longer be read afterwards and must be re-entered; re-run `python3 Michael/bootstrap/translator_tool.py`. (Rotating it also invalidates existing logins.) Values saved before encryption was enabled stay readable and are encrypted the next time they are written. Encryption does not cover the MCP tool-server connection key, which lives in Open WebUI's config, and the valves remain readable by admins and by anyone with a write grant on the tool.
+
+**Failure behavior.** Every failure returns `{"error": "Translation failed: <safe reason>"}` (and a failed status event) instead of raising: not configured (valves empty), no file attached, several files attached (lists the ids), file not found or not accessible, over 8 MiB, empty file, gateway unreachable, key rejected (401/403), other HTTP errors, unreadable gateway response, failed checksum, no user session to store the file, or a failed translation (with the gateway's error code). When the gateway rejects a submission it returns only a generic message, so the tool appends the supported languages and formats from `translation_capabilities` when available. If the job outlives the wait, the tool returns `{"status": "running", "job_id": ...}` and tells the model to use `deliver_translation` later.
 
 ### The native MCP connection
 
@@ -195,9 +195,9 @@ python3 Michael/bootstrap/translator_tool.py
 
 Through the admin API it: creates or updates the workspace tool and its valves with a public read grant; adds or updates the MCP connection (matched by `info.id`, other connections kept) and verifies it lists the three tools; registers the base model with a public read grant; and creates or updates the preset below. It prints PASS or FAIL per step, prints no secrets, and a re-run changes nothing.
 
-**Preset "Document Translator"** (id `document-translator`): based on `TRANSLATOR_BASE_MODEL`; file context off (the model sees only the attachment id, not the text); function calling `native`; built-in files, knowledge, time and user-input tools off; tools attached: `server:mcp:doctranslator` and `document_translator`; public read access; and a system prompt telling it to call `translate_attachment`, never read or re-type the document, and give the download link exactly as returned. The User Context filter ([Filter.md](Filter.md)) also applies to this preset.
+**Preset "Document Translator"** (id `document-translator`): based on `TRANSLATOR_BASE_MODEL`; file context off (the model sees only the attachment id, not the text); function calling `native`; built-in files, knowledge, time and user-input tools off; tools attached: `server:mcp:doctranslator` and `document_translator`; public read access; and a system prompt telling it to call `translate_attachment` (leaving out `file_id` when one file is attached), never read or re-type the document, and give the download link exactly as returned. The User Context filter ([Filter.md](Filter.md)) also applies to this preset.
 
-Limits: 8 MiB per file; generic gateway error on rejection; shared identity; the key sits in the tool valves and the MCP connection (admin-readable).
+Limits: 8 MiB per file; generic gateway error on rejection; shared identity; the key sits in the tool valves (encrypted at rest when enabled) and the MCP connection (not covered by valve encryption).
 
 ## 7. Instance-local tools with no source here
 
@@ -214,7 +214,7 @@ Treat them as instance-local. If one of them should be reproducible, export its 
 **Verified from this repository** (read at the time of writing):
 
 - API routes and fields in sections 4.2 and 5: `backend/open_webui/routers/tools.py`, `backend/open_webui/routers/configs.py`, `backend/open_webui/models/tools.py`.
-- Section 6: `Michael/tools/document_translator.py` and `Michael/bootstrap/translator_tool.py` as on `main`, and `Michael/README.md`. Nothing was run against a live gateway.
+- Section 6: `Michael/tools/document_translator.py` (version 0.2.0, the rewrite on `main`), `Michael/bootstrap/translator_tool.py`, `Michael/docker-compose.yaml`, `Michael/README.md`, and `backend/open_webui/utils/valves.py` for valve encryption. Nothing was run against a live gateway.
 - The names in section 7 are as given by the instance owner; the instance was not inspected.
 
 **Taken from the official documentation** (<https://docs.openwebui.com/features/extensibility/plugin/> and the pages under it), not re-tested here:
