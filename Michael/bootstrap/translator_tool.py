@@ -8,15 +8,14 @@ database or the data volume directly):
      valves (gateway URL and the shared translator API key; stored encrypted at
      rest when the server runs with ENABLE_VALVE_ENCRYPTION=true, which
      docker-compose.yaml sets), and a public read grant so every user can use it;
-  2. a "Document Translator" model preset: file context off, native function
-     calling, built-in file tools off, both tools attached, public read access,
-     and the base model registered with a public read grant (a non-admin user
+  2. the base model registered with a public read grant (a non-admin user
      cannot use a preset whose base model has no registered row).
 
-The translator gateway MCP tool server itself (the `doctranslator` connection the
-preset attaches) is registered by mcp_servers.py from mcp/mcp.json, which is the single
-owner of tool server registration. Run either script first: the preset only names the
-connection, and this script reports whether it is registered yet.
+The "Document Translator" model preset (and the other presets) is owned by presets.py
+from models/presets.json; it attaches this tool and the `doctranslator` connection. The
+translator gateway MCP tool server itself is registered by mcp_servers.py from
+mcp/mcp.json, which is the single owner of tool server registration. This script reports
+whether that connection is registered yet.
 
 Reuses the helpers of davy_connection.py. Standard library only. Secrets are
 never printed: only fixed status text is written to the terminal. Settings come
@@ -25,33 +24,13 @@ TRANSLATOR_API_KEY, TRANSLATOR_BASE_MODEL, optional TRANSLATOR_ID.
 """
 
 import sys
-import time
 
 from davy_connection import MICHAEL_DIR, ApiError, call, get_token, load_env
 
 TOOL_ID = 'document_translator'
 TOOL_FILE = MICHAEL_DIR / 'tools' / 'document_translator.py'
-MCP_CONN_ID = 'doctranslator'  # registered by mcp_servers.py (mcp/mcp.json); the preset attaches it
-MODEL_ID = 'document-translator'
-MODEL_NAME = 'Document Translator'
+MCP_CONN_ID = 'doctranslator'  # registered by mcp_servers.py (mcp/mcp.json); presets.py attaches it
 PUBLIC_READ = [{'principal_type': 'user', 'principal_id': '*', 'permission': 'read'}]
-
-SYSTEM_PROMPT = (
-    'You translate documents the user attaches to the chat. Attached files are listed in an '
-    '<attached_files> tag with an id for each file.\n'
-    '- To translate an attachment, call translate_attachment with the target language code (for '
-    'example zh, en, ja, es). Ask the user for the target language if it is not clear. Leave out '
-    'file_id when one file is attached; if the tool says several files are attached, call it again '
-    'with the id of the file the user means.\n'
-    '- Never read, quote, summarize or re-type the document yourself, and never ask the user to paste '
-    'its text. The tool reads the file on the server.\n'
-    '- When the tool returns a download link, give the user that link exactly as returned.\n'
-    '- If the tool reports an error, tell the user what it says. If it reports that the translation is '
-    'still running, tell the user, and call deliver_translation with the job id when they ask again.\n'
-    '- To list supported languages and formats, use the translator capabilities tool. Use the translator '
-    'status or cancel tool only for a job id you were given.\n'
-    "Answer briefly, in the user's language."
-)
 
 
 def settings(env):
@@ -149,56 +128,6 @@ def register_base_model(base, token, base_model):
     return True
 
 
-def upsert_preset(base, token, cfg):
-    desired = {
-        'id': MODEL_ID,
-        'base_model_id': cfg['base_model'],
-        'name': MODEL_NAME,
-        'is_active': True,
-        'access_grants': PUBLIC_READ,
-        'meta': {
-            'description': 'Translates attached documents and returns the translated file.',
-            'capabilities': {'file_context': False, 'file_upload': True, 'builtin_tools': True},
-            'builtinTools': {'files': False, 'knowledge': False, 'time': False, 'user_input': False},
-            'toolIds': [f'server:mcp:{MCP_CONN_ID}', TOOL_ID],
-        },
-        'params': {'function_calling': 'native', 'system': SYSTEM_PROMPT},
-    }
-    current = get_model(base, token, MODEL_ID)
-    if current is None:
-        call(base, 'POST', '/api/v1/models/create', token, desired)
-        return True
-    meta, params = current.get('meta') or {}, current.get('params') or {}
-    same = (
-        current.get('base_model_id') == desired['base_model_id']
-        and current.get('name') == desired['name']
-        and current.get('is_active') is True
-        and ('user', '*', 'read') in grants_of(current)
-        and all(meta.get(k) == v for k, v in desired['meta'].items())
-        and all(params.get(k) == v for k, v in desired['params'].items())
-    )
-    if same:
-        return False
-    call(
-        base,
-        'POST',
-        '/api/v1/models/model/update',
-        token,
-        {**desired, 'meta': {**meta, **desired['meta']}, 'params': {**params, **desired['params']}},
-    )
-    return True
-
-
-def preset_visible(base, token, attempts=5):
-    """A freshly created preset can briefly be missing from the model list."""
-    for _ in range(attempts):
-        res = call(base, 'GET', '/api/models', token) or {}
-        if any(m.get('id') == MODEL_ID for m in res.get('data') or []):
-            return True
-        time.sleep(2)
-    return False
-
-
 def main():
     env = load_env()
     base = (env.get('OPEN_WEBUI_URL') or f'http://localhost:{env.get("OPEN_WEBUI_PORT") or 3000}').rstrip('/')
@@ -226,7 +155,7 @@ def main():
         if mcp_connection_registered(base, token):
             report(True, f'MCP tool server "{MCP_CONN_ID}" is registered (managed by mcp_servers.py)')
         else:
-            print(f'[NOTE] MCP tool server "{MCP_CONN_ID}" is not registered yet: run bootstrap/mcp_servers.py (the preset attaches it)')
+            print(f'[NOTE] MCP tool server "{MCP_CONN_ID}" is not registered yet: run bootstrap/mcp_servers.py (the presets attach it)')
 
         base_changed = register_base_model(base, token, cfg['base_model'])
         report(
@@ -234,11 +163,7 @@ def main():
             'base model '
             + ('registered with public read grant' if base_changed else 'already registered with public read grant'),
         )
-        report(
-            True,
-            'translator preset ' + ('created/updated' if upsert_preset(base, token, cfg) else 'already up to date'),
-        )
-        report(preset_visible(base, token), 'translator preset is listed by Open WebUI')
+        print('[NOTE] model presets (including Document Translator) are created by bootstrap/presets.py')
     except ApiError as e:
         report(False, str(e))
 

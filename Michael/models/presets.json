@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "base_model": "gemma-4-31b-it",
+  "filter_ids": ["user_context"],
+  "presets": [
+    {
+      "id": "lenny",
+      "name": "Lenny",
+      "description": "All-in-one assistant: web search, document translation, employee directory and mail drafting.",
+      "prompt": "lenny.md",
+      "tools": [
+        {"server": "doctranslator"},
+        {"tool": "document_translator"},
+        {"server": "employee_directory"},
+        {"server": "mail", "optional": true}
+      ],
+      "capabilities": {
+        "file_upload": true,
+        "file_context": false,
+        "web_search": true,
+        "image_generation": false,
+        "code_interpreter": false,
+        "terminal": false,
+        "memory": false,
+        "builtin_tools": true,
+        "citations": true,
+        "status_updates": true,
+        "usage": false
+      },
+      "builtin_tools": ["time", "user_input", "web_search", "files", "knowledge"],
+      "default_features": ["web_search"],
+      "params": {}
+    },
+    {
+      "id": "document-translator",
+      "name": "Document Translator",
+      "description": "Translates attached documents and returns the translated file. Nothing else.",
+      "prompt": "document-translator.md",
+      "tools": [
+        {"server": "doctranslator"},
+        {"tool": "document_translator"}
+      ],
+      "capabilities": {
+        "file_upload": true,
+        "file_context": false,
+        "web_search": false,
+        "image_generation": false,
+        "code_interpreter": false,
+        "terminal": false,
+        "memory": false,
+        "builtin_tools": true,
+        "citations": true,
+        "status_updates": true,
+        "usage": false
+      },
+      "builtin_tools": [],
+      "default_features": [],
+      "params": {"temperature": 0.2}
+    },
+    {
+      "id": "web-searcher",
+      "name": "Web Searcher",
+      "description": "Searches the web and answers with cited sources. No other tools.",
+      "prompt": "web-searcher.md",
+      "tools": [],
+      "capabilities": {
+        "file_upload": false,
+        "file_context": false,
+        "web_search": true,
+        "image_generation": false,
+        "code_interpreter": false,
+        "terminal": false,
+        "memory": false,
+        "builtin_tools": true,
+        "citations": true,
+        "status_updates": true,
+        "usage": false
+      },
+      "builtin_tools": ["time", "web_search"],
+      "default_features": ["web_search"],
+      "params": {"temperature": 0.3}
+    },
+    {
+      "id": "office-agent",
+      "name": "Office Agent",
+      "description": "Finds colleagues in the employee directory and drafts email for you to review and send.",
+      "prompt": "office-agent.md",
+      "tools": [
+        {"server": "employee_directory"},
+        {"server": "mail", "optional": true}
+      ],
+      "capabilities": {
+        "file_upload": true,
+        "file_context": false,
+        "web_search": false,
+        "image_generation": false,
+        "code_interpreter": false,
+        "terminal": false,
+        "memory": false,
+        "builtin_tools": true,
+        "citations": true,
+        "status_updates": true,
+        "usage": false
+      },
+      "builtin_tools": ["time", "user_input"],
+      "default_features": [],
+      "params": {"temperature": 0.3}
+    }
+  ]
+}

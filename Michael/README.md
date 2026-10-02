@@ -12,9 +12,9 @@ Read [onboarding](docs/ONBOARDING.md) before implementation. This repository is 
 | `mcp/mcp.json` | Declared external tool servers (translator gateway, employee directory) with `mcp.schema.json`; registered by `bootstrap/mcp_servers.py` |
 | `tools/` | Reviewed tool definitions/adapters (`document_translator.py`) |
 | `functions/` | Open WebUI functions (`user_context.py` filter, `audit_log.py` event function) |
-| `prompts/` | Versioned specialist system prompts |
-| `models/` | Model/agent preset manifests; `user-context.json` sets which user fields each model receives |
-| `bootstrap/` | Authenticated, idempotent provisioning (`build_ca_bundle.py`, `davy_connection.py`, `xai_connection.py`, `mcp_servers.py`, `seed_employees.py`, `translator_tool.py`, `user_context.py`, `audit_log.py`, `branding.py`) |
+| `prompts/` | Versioned system prompts, one file per preset |
+| `models/` | `presets.json` declares the model presets; `user-context.json` sets which user fields each model receives |
+| `bootstrap/` | Authenticated, idempotent provisioning (`build_ca_bundle.py`, `davy_connection.py`, `xai_connection.py`, `mcp_servers.py`, `presets.py`, `seed_employees.py`, `translator_tool.py`, `user_context.py`, `audit_log.py`, `branding.py`) |
 | `services/` | Local MCP/bridge/worker container build contexts (a checkout of the employee-directory source can sit here; see `EMPLOYEE_DIRECTORY_SRC`) |
 | `tests/` | Filter and audit-log unit tests, throwaway-stack end-to-end check, model-request log proxy; `fixtures/` holds synthetic test files only |
 | `runtime/` | Ignored certificates, secrets, local data |
@@ -66,7 +66,7 @@ python3 Michael/bootstrap/xai_connection.py
 `bootstrap/translator_tool.py` provisions document translation through the translator MCP gateway. Same conventions as `davy_connection.py` (admin credentials, PASS/FAIL output, secrets never printed, re-runs change nothing, standard library only). Through the admin API it:
 
 1. creates or updates the workspace tool `tools/document_translator.py` and sets its valves (gateway URL and the shared translator API key), with a public read grant;
-2. registers the base model with a public read grant (a non-admin user cannot use a preset whose base model has no registered row) and creates or updates the **Document Translator** preset: file context off, native function calling, built-in file and knowledge tools off, both tools attached, public read access.
+2. registers the base model with a public read grant (a non-admin user cannot use a preset whose base model has no registered row). The **Document Translator** preset that attaches this tool is created by `bootstrap/presets.py` (see Model presets).
 
 The gateway's MCP connection (`doctranslator`, exposing only `translation_capabilities`, `get_translation_status` and `cancel_translation`; the base64-carrying tools are filtered out so the model cannot pass file contents through the model context) is **not** registered here: `bootstrap/mcp_servers.py` owns all tool server registration (see below). Run it before or after this script; the preset only names the connection, and this script prints a `[NOTE]` if it is not registered yet.
 
@@ -102,6 +102,31 @@ python3 Michael/bootstrap/seed_employees.py /path/to/employees.json
 ```
 
 How external tool servers work in Open WebUI, the `mcp.json` reference, how to add a server, troubleshooting and security notes: [docs/ExternalToolServers.md](docs/ExternalToolServers.md).
+
+## Bootstrap: model presets
+
+`models/presets.json` declares four ready-made models; `bootstrap/presets.py` creates or updates them through the admin API (same conventions as the other scripts: admin credentials from `.env`, PASS/FAIL lines, secrets never printed, standard library only). Each preset has its system prompt (`prompts/<name>.md`), native function calling, its tool list, capabilities, built-in tools, default features and the `user_context` filter attached.
+
+| Preset (id) | Tools | Web search | Notes |
+|---|---|---|---|
+| Lenny (`lenny`) | translation stack, employee directory, mail, built-in web search, time, files, knowledge | on by default | all-in-one assistant |
+| Document Translator (`document-translator`) | `doctranslator` MCP connection and the Document Translator tool only | off | file context off: the model never sees document text |
+| Web Searcher (`web-searcher`) | built-in web search and time only | on by default | sees only the user's name; answers with sources |
+| Office Agent (`office-agent`) | employee directory and mail | off | drafts mail for the user to review and send; can attach chat files through the mail tool |
+
+Mail is the `mail` connection of the mail service. It is not in `mcp/mcp.json` yet: until it is registered the script prints a `[NOTE]` (not a failure) and the presets already name it, so they use it as soon as the connection exists. Other unregistered tools or a missing filter are noted the same way. Web search needs Open WebUI's own search setting (`ENABLE_WEB_SEARCH`, `WEB_SEARCH_ENGINE`, e.g. `SEARXNG_QUERY_URL`; see `.env.example`): the compose file has no search service, and the script notes when search is not configured.
+
+Base model: one setting. `--base-model`, else `PRESETS_BASE_MODEL`, else `TRANSLATOR_BASE_MODEL` in `.env`, else `gemma-4-31b-it` from `presets.json`.
+
+```
+python3 Michael/bootstrap/mcp_servers.py
+python3 Michael/bootstrap/user_context.py
+python3 Michael/bootstrap/translator_tool.py
+python3 Michael/bootstrap/presets.py --check   # exit 1 if a preset differs
+python3 Michael/bootstrap/presets.py
+```
+
+Re-runs change nothing; only the settings `presets.json` declares are managed, other fields of a preset edited in the UI are kept. To change a prompt, edit its file and re-run. `tests/test_presets.py` holds the unit tests (`python3 Michael/tests/test_presets.py`). Tool visibility is per connection: a preset sees every tool its connection exposes (after the `function_name_filter_list`).
 
 ## Bootstrap: user context for every model
 

@@ -22,7 +22,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'bootstrap'))
 
 from davy_connection import ApiError, call, get_token, load_env  # noqa: E402
-from translator_tool import SYSTEM_PROMPT, register_base_model  # noqa: E402
+from presets import load_presets  # noqa: E402
+from translator_tool import register_base_model  # noqa: E402
 from user_context import FIELDS, FUNCTION_ID, VALVE, ensure_valves, load_config  # noqa: E402
 
 LOG = Path(os.environ['USER_CONTEXT_REQUEST_LOG'])
@@ -33,6 +34,7 @@ USERS = [
 ]
 EMBEDDINGS = ['bge-reranker-v2-m3', 'llama-embed-nemotron-8b']
 PRESET_ID = 'document-translator'
+SYSTEM_PROMPT = next(x['system'] for x in load_presets()[1] if x['id'] == PRESET_ID)
 FEWER_MODEL = 'nemotron-3-ultra'
 
 

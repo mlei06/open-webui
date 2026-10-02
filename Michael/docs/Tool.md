@@ -189,16 +189,16 @@ The gateway's base64-carrying tools are filtered out on purpose, so the model ca
 
 ### Provisioning and the preset
 
-Scripts: `Michael/bootstrap/mcp_servers.py` registers the MCP connection; `Michael/bootstrap/translator_tool.py` creates the tool, its valves and the preset. Settings in `Michael/.env` (placeholders in `.env.example`): `TRANSLATOR_GATEWAY_URL` (reachable from the container, for example `http://host.docker.internal:8766/mcp`), `TRANSLATOR_API_KEY`, `TRANSLATOR_BASE_MODEL` (a model id listed by Open WebUI), optional `TRANSLATOR_ID`, plus the admin credentials.
+Scripts: `Michael/bootstrap/mcp_servers.py` registers the MCP connection; `Michael/bootstrap/translator_tool.py` creates the tool and its valves, and `Michael/bootstrap/presets.py` creates the preset. Settings in `Michael/.env` (placeholders in `.env.example`): `TRANSLATOR_GATEWAY_URL` (reachable from the container, for example `http://host.docker.internal:8766/mcp`), `TRANSLATOR_API_KEY`, `TRANSLATOR_BASE_MODEL` (a model id listed by Open WebUI), optional `TRANSLATOR_ID`, plus the admin credentials.
 
 ```
 python3 Michael/bootstrap/mcp_servers.py
 python3 Michael/bootstrap/translator_tool.py
 ```
 
-Either order works: `mcp_servers.py` is the only script that registers the MCP connection (matched by `info.id`, other connections kept, verified to list the three tools), and `translator_tool.py` prints a `[NOTE]` if the connection is not there yet. Through the admin API `translator_tool.py` creates or updates the workspace tool and its valves with a public read grant; registers the base model with a public read grant; and creates or updates the preset below. Both scripts print PASS or FAIL per step, print no secrets, and a re-run changes nothing.
+Either order works: `mcp_servers.py` is the only script that registers the MCP connection (matched by `info.id`, other connections kept, verified to list the three tools), and `translator_tool.py` prints a `[NOTE]` if the connection is not there yet. Through the admin API `translator_tool.py` creates or updates the workspace tool and its valves with a public read grant; registers the base model with a public read grant. The preset below is created by `presets.py` from `models/presets.json`. Both scripts print PASS or FAIL per step, print no secrets, and a re-run changes nothing.
 
-**Preset "Document Translator"** (id `document-translator`): based on `TRANSLATOR_BASE_MODEL`; file context off (the model sees only the attachment id, not the text); function calling `native`; built-in files, knowledge, time and user-input tools off; tools attached: `server:mcp:doctranslator` and `document_translator`; public read access; and a system prompt telling it to call `translate_attachment` (leaving out `file_id` when one file is attached), never read or re-type the document, and give the download link exactly as returned. The User Context filter ([Filter.md](Filter.md)) also applies to this preset.
+**Preset "Document Translator"** (id `document-translator`, declared in `models/presets.json`, prompt in `prompts/document-translator.md`, created by `presets.py`; base model `PRESETS_BASE_MODEL`, else `TRANSLATOR_BASE_MODEL`): file context off (the model sees only the attachment id, not the text); function calling `native`; built-in files, knowledge, time and user-input tools off; tools attached: `server:mcp:doctranslator` and `document_translator`; public read access; and a system prompt telling it to call `translate_attachment` (leaving out `file_id` when one file is attached), never read or re-type the document, and give the download link exactly as returned. The User Context filter ([Filter.md](Filter.md)) also applies to this preset.
 
 Limits: 8 MiB per file; generic gateway error on rejection; shared identity; the key sits in the tool valves (encrypted at rest when enabled) and the MCP connection (not covered by valve encryption).
 

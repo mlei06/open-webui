@@ -8,6 +8,9 @@
     "nemotron-3-super-120b": ["name", "id", "email"],
     "nemotron-3-ultra": ["name", "id", "email"],
     "document-translator": ["name", "id", "email"],
+    "lenny": ["name", "id", "email"],
+    "web-searcher": ["name"],
+    "office-agent": ["name", "id", "email"],
     "bge-reranker-v2-m3": [],
     "llama-embed-nemotron-8b": []
   }
