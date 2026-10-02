@@ -1,28 +1,39 @@
 """
 title: Document Translator
 author: Michael
-description: Translate a chat attachment with the document translator gateway and hand the translated file back as a download. The model only passes an attachment id and a target language; the file bytes never enter the model context.
-version: 0.1.0
+description: Translate a chat attachment with the document translator MCP gateway and hand the translated file back as a download. The file bytes never enter the model context.
+required_open_webui_version: 0.11.4
+version: 0.2.0
 license: MIT
 """
+
+# No `requirements:` line on purpose. Everything imported below ships with Open
+# WebUI (mcp==1.27.2, httpx, pydantic), so nothing is pip-installed at save time
+# (the docs advise against runtime installs; set
+# ENABLE_PIP_INSTALL_FRONTMATTER_REQUIREMENTS=False in production).
 
 import asyncio
 import base64
 import hashlib
+import json
 import os
 import re
 import uuid
-from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Awaitable, Callable, Optional
 from urllib.parse import unquote
 
-import aiohttp
+import httpx
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
+from mcp.shared.exceptions import McpError
 from pydantic import BaseModel, Field
 
 MAX_INLINE_BYTES = 8 * 1024 * 1024  # inline limit of the translator gateway
 TERMINAL_STATUSES = {'succeeded', 'failed', 'cancelled', 'canceled', 'expired'}
-RPC_TIMEOUT_SECONDS = 120
+CALL_TIMEOUT_SECONDS = 120
+INITIALIZE_TIMEOUT_SECONDS = 30
 
 
 class ToolError(Exception):
@@ -33,11 +44,11 @@ class Tools:
     class Valves(BaseModel):
         GATEWAY_URL: str = Field(
             default='',
-            description='Translator MCP gateway URL reachable from the Open WebUI server, e.g. http://host.docker.internal:8766/mcp',
+            description='Translator MCP gateway URL (Streamable HTTP) reachable from the Open WebUI server, e.g. http://host.docker.internal:8766/mcp',
         )
         TRANSLATOR_API_KEY: str = Field(
             default='',
-            description='Shared translator API key (sent as a Bearer token to the gateway).',
+            description='Shared translator API key, sent as a Bearer token to the gateway. Stored encrypted at rest when the server runs with ENABLE_VALVE_ENCRYPTION=true and a stable WEBUI_SECRET_KEY.',
             json_schema_extra={'input': {'type': 'password'}},
         )
         OPEN_WEBUI_URL: str = Field(
@@ -61,24 +72,23 @@ class Tools:
 
     async def translate_attachment(
         self,
-        file_id: str,
         target_language: str,
+        file_id: Optional[str] = None,
         source_language: str = 'auto',
-        __user__: dict | None = None,
+        __user__: Optional[dict] = None,
         __request__: Any = None,
-        __files__: list | None = None,
-        __event_emitter__: Callable[[dict], Awaitable[None]] | None = None,
-    ) -> str:
+        __files__: Optional[list] = None,
+        __event_emitter__: Optional[Callable[[dict], Awaitable[None]]] = None,
+    ) -> dict:
         """
-        Translate a document the user attached to this chat and give the user the translated file as a download.
-        Pass the id of the attachment (the id attribute in the attached_files tag) and the target language code.
-        Never read, quote or re-type the document yourself; this tool reads it on the server.
-        Reply to the user with the download link this tool returns.
+        Translate the document the user attached to this message and give the user the translated file as a download.
+        The tool reads the file on the server: never read, quote or re-type the document yourself.
+        When the result contains a download link, give the user that link exactly as returned.
 
-        :param file_id: Id of the attached file, copied from the attached_files tag.
-        :param target_language: Target language code, for example "zh", "en", "fr", "de", "ja".
+        :param target_language: Target language code, for example "zh", "en", "ja", "es".
+        :param file_id: Id of the attached file (the id attribute in the attached_files tag).
+            Leave it out when exactly one file is attached; the tool then uses that file.
         :param source_language: Source language code, or "auto" to detect it.
-        :return: A short message with the download link of the translated file, or an error description.
         """
         try:
             cfg = self._config()
@@ -88,7 +98,6 @@ class Tools:
             target = self._language(target_language)
             source = self._language(source_language or 'auto')
 
-            await self._status(__event_emitter__, 'Submitting to the translator')
             args = {
                 'filename': name,
                 'content_base64': base64.b64encode(data).decode(),
@@ -98,39 +107,43 @@ class Tools:
             }
             if cfg['translator_id']:
                 args['translator_id'] = cfg['translator_id']
-            try:
-                job = await self._rpc(cfg, 'translate_document', args)
-            except ToolError as e:
-                raise ToolError(f'{e}{await self._support_hint(cfg)}') from None
-            job_id = job.get('id')
-            if not job_id:
-                raise ToolError('The translator did not return a job id.')
-            del args, data  # release the bytes before the (long) wait
+            del data
 
-            return await self._wait_and_deliver(cfg, job_id, name, target, __request__, __event_emitter__)
+            async with self._gateway(cfg) as session:
+                await self._status(__event_emitter__, 'Submitting to the translator')
+                try:
+                    job = await self._call(session, 'translate_document', args)
+                except ToolError as e:
+                    raise ToolError(f'{e}{await self._support_hint(session)}') from None
+                del args
+                job_id = job.get('id')
+                if not job_id:
+                    raise ToolError('The translator did not return a job id.')
+                fetched = await self._wait_and_fetch(session, cfg, job_id, __event_emitter__)
+
+            return await self._deliver(cfg, fetched, name, target, __request__, __event_emitter__)
         except ToolError as e:
-            await self._status(__event_emitter__, 'Translation failed', done=True)
-            return f'Translation failed: {e}'
+            return await self._fail(__event_emitter__, str(e))
 
     async def deliver_translation(
         self,
         job_id: str,
         __request__: Any = None,
-        __event_emitter__: Callable[[dict], Awaitable[None]] | None = None,
-    ) -> str:
+        __event_emitter__: Optional[Callable[[dict], Awaitable[None]]] = None,
+    ) -> dict:
         """
         Fetch a translation job that was started earlier (for example one that was still running when
         translate_attachment returned its job id) and give the user the translated file as a download.
 
         :param job_id: The translation job id.
-        :return: A short message with the download link of the translated file, or the job's current state.
         """
         try:
             cfg = self._config()
-            return await self._wait_and_deliver(cfg, job_id, None, None, __request__, __event_emitter__)
+            async with self._gateway(cfg) as session:
+                fetched = await self._wait_and_fetch(session, cfg, (job_id or '').strip(), __event_emitter__)
+            return await self._deliver(cfg, fetched, None, None, __request__, __event_emitter__)
         except ToolError as e:
-            await self._status(__event_emitter__, 'Translation failed', done=True)
-            return f'Translation failed: {e}'
+            return await self._fail(__event_emitter__, str(e))
 
     # ---------------------------------------------------------------- helpers
 
@@ -161,27 +174,54 @@ class Tools:
     @staticmethod
     async def _status(emitter, description: str, done: bool = False):
         if emitter:
-            await emitter({'type': 'status', 'data': {'description': description, 'done': done}})
+            await emitter({'type': 'status', 'data': {'description': description, 'done': done, 'hidden': False}})
 
-    async def _read_attachment(self, file_id: str, user: dict, files: list) -> tuple[str, bytes]:
+    async def _fail(self, emitter, message: str) -> dict:
+        await self._status(emitter, f'Translation failed: {message}'[:300], done=True)
+        return {'error': f'Translation failed: {message}'}
+
+    # --------------------------------------------------------------- attachment
+
+    @staticmethod
+    def _attachments(files: list) -> dict:
+        """The files attached to this message, by id."""
+        out = {}
+        for f in files:
+            if not isinstance(f, dict) or f.get('type', 'file') != 'file':
+                continue
+            fid = f.get('id') or (f.get('file') or {}).get('id')
+            if fid and not str(fid).startswith(('http://', 'https://', 'data:')):
+                out[fid] = f
+        return out
+
+    @staticmethod
+    def _label(attached: dict) -> str:
+        return ', '.join(f'{i} ({f.get("name") or (f.get("file") or {}).get("filename") or "unnamed"})' for i, f in attached.items())
+
+    async def _read_attachment(self, file_id: Optional[str], user: dict, files: list) -> tuple[str, bytes]:
         """Read an attachment from Open WebUI's own file store, only if the caller may access it."""
         from open_webui.models.files import Files
         from open_webui.storage.provider import Storage
 
+        attached = self._attachments(files)
         file_id = (file_id or '').strip()
-        attached = {f.get('id'): f for f in files if isinstance(f, dict) and f.get('id')}
-        if file_id not in attached:
+        if not file_id:
+            if not attached:
+                raise ToolError('no file is attached to this message. Ask the user to attach the document.')
+            if len(attached) > 1:
+                raise ToolError(
+                    f'several files are attached; call again with file_id set to one of: {self._label(attached)}.'
+                )
+            file_id = next(iter(attached))
+        elif file_id not in attached:
             # Tolerate the model passing the file name instead of the id.
             by_name = [i for i, f in attached.items() if f.get('name') == file_id]
             if len(by_name) == 1:
                 file_id = by_name[0]
-        record = await Files.get_file_by_id(file_id) if file_id else None
-        owner_ok = record is not None and (
-            record.user_id == user.get('id') or user.get('role') == 'admin' or file_id in attached
-        )
-        if not owner_ok:
-            known = ', '.join(f'{i} ({f.get("name")})' for i, f in attached.items()) or 'none'
-            raise ToolError(f'no attached file with id "{file_id}" was found. Attachments in this chat: {known}.')
+        record = await Files.get_file_by_id(file_id)
+        if record is None or not (file_id in attached or record.user_id == user.get('id')):
+            known = self._label(attached) or 'none'
+            raise ToolError(f'no attached file with id "{file_id}" was found. Files attached to this message: {known}.')
 
         size = (record.meta or {}).get('size')
         if isinstance(size, int) and size > MAX_INLINE_BYTES:
@@ -208,78 +248,98 @@ class Tools:
             'Translate it with the translator application directly, or split it into smaller files.'
         )
 
-    async def _rpc(self, cfg: dict, tool: str, arguments: dict) -> dict:
-        """Call one gateway tool over Streamable HTTP (stateless JSON-RPC) and return its structured result."""
-        import json
+    # ------------------------------------------------------------- MCP gateway
 
-        body = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {'name': tool, 'arguments': arguments}}
-        headers = {
-            'Authorization': f'Bearer {cfg["key"]}',
-            'Content-Type': 'application/json',
-            'Accept': 'application/json, text/event-stream',
-        }
+    @asynccontextmanager
+    async def _gateway(self, cfg: dict):
+        """An initialized MCP client session (Streamable HTTP, bearer auth) for the duration of the block."""
+        client = httpx.AsyncClient(
+            headers={'Authorization': f'Bearer {cfg["key"]}'},
+            timeout=httpx.Timeout(30.0, read=CALL_TIMEOUT_SECONDS),
+            follow_redirects=True,
+        )
         try:
-            timeout = aiohttp.ClientTimeout(total=RPC_TIMEOUT_SECONDS)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(cfg['url'], json=body, headers=headers) as r:
-                    status, ctype, text = r.status, r.headers.get('Content-Type', ''), await r.text()
-        except (TimeoutError, aiohttp.ClientError, OSError) as e:
-            raise ToolError(f'the translator gateway is unreachable ({type(e).__name__}).') from None
-        if status in (401, 403):
-            raise ToolError('the translator gateway rejected the configured API key. Ask an administrator.')
-        if status >= 400:
-            raise ToolError(f'the translator gateway answered HTTP {status}.')
+            async with client, streamable_http_client(cfg['url'], http_client=client) as (read, write, _):
+                async with ClientSession(read, write) as session:
+                    async with asyncio.timeout(INITIALIZE_TIMEOUT_SECONDS):
+                        await session.initialize()
+                    yield session
+        except Exception as e:  # the MCP transport reports failures wrapped in exception groups
+            raise self._gateway_error(e) from None
+
+    @classmethod
+    def _gateway_error(cls, exc: BaseException) -> ToolError:
+        if isinstance(exc, BaseExceptionGroup):
+            leaves = list(exc.exceptions)
+            return cls._gateway_error(next((e for e in leaves if isinstance(e, ToolError)), leaves[0]))
+        if isinstance(exc, ToolError):
+            return exc
+        if isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code
+            if status in (401, 403):
+                return ToolError('the translator gateway rejected the configured API key. Ask an administrator.')
+            return ToolError(f'the translator gateway answered HTTP {status}.')
+        if isinstance(exc, McpError):
+            return ToolError(str(exc.error.message)[:300])
+        if isinstance(exc, TimeoutError):
+            return ToolError('the translator gateway did not answer in time.')
+        if isinstance(exc, (httpx.TransportError, OSError)):
+            return ToolError(f'the translator gateway is unreachable ({type(exc).__name__}).')
+        return ToolError(f'the translator gateway returned an unexpected response ({type(exc).__name__}).')
+
+    async def _call(self, session: ClientSession, tool: str, arguments: dict) -> dict:
+        """Call one gateway tool and return its structured result."""
         try:
-            if 'text/event-stream' in ctype:
-                lines = [ln[5:].strip() for ln in text.splitlines() if ln.startswith('data:')]
-                payload = json.loads(lines[-1])
-            else:
-                payload = json.loads(text)
-        except (ValueError, IndexError):
-            raise ToolError('the translator gateway returned an unreadable response.') from None
-        if 'error' in payload:
-            raise ToolError(str((payload['error'] or {}).get('message', 'gateway error'))[:300])
-        result = payload.get('result') or {}
-        if result.get('isError'):
-            content = result.get('content') or [{}]
-            raise ToolError(str(content[0].get('text', 'gateway error'))[:300])
-        structured = result.get('structuredContent')
-        if isinstance(structured, dict):
-            return structured
+            async with asyncio.timeout(CALL_TIMEOUT_SECONDS):
+                result = await session.call_tool(tool, arguments)
+        except (McpError, TimeoutError) as e:
+            raise self._gateway_error(e) from None
+        texts = [c.text for c in result.content or [] if getattr(c, 'type', '') == 'text']
+        if result.isError:
+            message = re.sub(r'^Error executing tool \S+: ', '', texts[0] if texts else 'gateway error')
+            raise ToolError(message[:300])
+        if isinstance(result.structuredContent, dict):
+            return result.structuredContent
         try:
-            return json.loads((result.get('content') or [{}])[0].get('text', ''))
-        except ValueError:
+            parsed = json.loads(texts[0])
+        except (IndexError, ValueError):
             raise ToolError('the translator gateway returned an unexpected result.') from None
+        if not isinstance(parsed, dict):
+            raise ToolError('the translator gateway returned an unexpected result.')
+        return parsed
 
-    async def _support_hint(self, cfg: dict) -> str:
-        """Best effort: the gateway reports a rejected submission only as an HTTP status, so say what it supports."""
+    async def _support_hint(self, session: ClientSession) -> str:
+        """Best effort: the gateway reports a rejected submission only generically, so say what it supports."""
         try:
-            caps = await self._rpc(cfg, 'translation_capabilities', {})
+            caps = await self._call(session, 'translation_capabilities', {})
             langs, formats = caps.get('languages'), caps.get('formats')
+            engines = [t.get('id') for t in caps.get('translators') or [] if isinstance(t, dict) and t.get('id')]
             if langs and formats:
-                return f' Supported target languages: {", ".join(langs)}. Supported file formats: {", ".join(formats)}.'
+                hint = f' Supported target languages: {", ".join(langs)}. Supported file formats: {", ".join(formats)}.'
+                return hint + (f' Available translator engines: {", ".join(engines)}.' if engines else '')
         except ToolError:
             pass
         return ''
 
-    async def _wait_and_deliver(self, cfg, job_id, name, target, request, emitter) -> str:
+    async def _wait_and_fetch(self, session: ClientSession, cfg: dict, job_id: str, emitter) -> dict:
+        """Poll a job until it is done. Returns {'running': job} or {'job_id', 'file', 'original_name', 'target'}."""
+        if not job_id:
+            raise ToolError('give the job id of the translation.')
         loop = asyncio.get_running_loop()
         deadline = loop.time() + cfg['max_wait']
+        shown = ''
         while True:
-            job = await self._rpc(cfg, 'get_translation_status', {'resource_id': job_id})
+            job = await self._call(session, 'get_translation_status', {'resource_id': job_id})
             state = job.get('status')
             progress = job.get('progress') or {}
             if state in TERMINAL_STATUSES or job.get('result_available'):
                 break
             suffix = f' ({progress["done"]}/{progress["total"]})' if progress.get('total') else ''
-            await self._status(emitter, f'Translating{suffix}')
+            if f'Translating{suffix}' != shown:
+                shown = f'Translating{suffix}'
+                await self._status(emitter, shown)
             if loop.time() + cfg['interval'] > deadline:
-                await self._status(emitter, 'Translation still running', done=True)
-                return (
-                    f'The translation is still running (job id {job_id}, state {state}). '
-                    'Tell the user it is not finished yet; call deliver_translation with this job id later '
-                    'to fetch it, or get_translation_status to check on it.'
-                )
+                return {'running': job}
             await asyncio.sleep(cfg['interval'])
 
         if not job.get('result_available'):
@@ -287,8 +347,23 @@ class Tools:
             raise ToolError(f'the translation {state or "did not finish"} ({detail or "no detail"}). Job id {job_id}.')
 
         await self._status(emitter, 'Fetching the translated file')
-        res = await self._rpc(cfg, 'get_translation_result', {'job_id': job_id, 'include_content': True})
-        f = res.get('file') or {}
+        res = await self._call(session, 'get_translation_result', {'job_id': job_id, 'include_content': True})
+        return {'job_id': job_id, **res}
+
+    async def _deliver(self, cfg, fetched: dict, name, target, request, emitter) -> dict:
+        if 'running' in fetched:
+            job = fetched['running']
+            await self._status(emitter, 'Translation still running', done=True)
+            return {
+                'status': 'running',
+                'job_id': job.get('id'),
+                'message': (
+                    f'The translation is still running (job id {job.get("id")}, state {job.get("status")}). '
+                    'Tell the user it is not finished yet; call deliver_translation with this job id later to fetch it.'
+                ),
+            }
+
+        f = fetched.get('file') or {}
         try:
             out = base64.b64decode(f.get('content_base64', ''), validate=True)
         except ValueError:
@@ -298,21 +373,31 @@ class Tools:
             raise ToolError('the translated file failed its integrity check.')
 
         out_name = self._result_name(
-            f.get('content_disposition'), name or res.get('original_name'), target or res.get('target')
+            f.get('content_disposition'), name or fetched.get('original_name'), target or fetched.get('target')
         )
         file_id = await self._store(cfg, request, out_name, f.get('content_type') or 'application/octet-stream', out)
         url = f'/api/v1/files/{file_id}/content'
         if emitter:
-            await emitter({'type': 'files', 'data': {'files': [{'type': 'file', 'url': url, 'name': out_name}]}})
+            await emitter(
+                {
+                    'type': 'files',
+                    'data': {'files': [{'type': 'file', 'id': file_id, 'name': out_name, 'url': url}]},
+                }
+            )
         await self._status(emitter, 'Translation finished', done=True)
         link = f'{url}?attachment=true'
-        return (
-            f'The translation is ready and attached to this message as "{out_name}". '
-            f'Give the user this download link exactly as written: [{out_name}]({link})'
-        )
+        return {
+            'status': 'succeeded',
+            'file_name': out_name,
+            'download_url': link,
+            'message': (
+                f'The translation is ready and attached to this message as "{out_name}". '
+                f'Give the user this download link exactly as written: [{out_name}]({link})'
+            ),
+        }
 
     @staticmethod
-    def _result_name(disposition: str | None, original: str | None, target: str | None) -> str:
+    def _result_name(disposition: Optional[str], original: Optional[str], target: Optional[str]) -> str:
         if disposition:
             m = re.search(r"filename\*=UTF-8''([^;]+)", disposition, re.I) or re.search(
                 r'filename="?([^";]+)"?', disposition, re.I
@@ -338,22 +423,21 @@ class Tools:
             token = request.state.token.credentials
         if not token:
             raise ToolError('could not store the file: no user session is available for this request.')
-        form = aiohttp.FormData()
-        form.add_field('file', data, filename=name, content_type=content_type)
         try:
-            timeout = aiohttp.ClientTimeout(total=RPC_TIMEOUT_SECONDS)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(
+            async with httpx.AsyncClient(timeout=CALL_TIMEOUT_SECONDS) as client:
+                r = await client.post(
                     f'{cfg["owui"]}/api/v1/files/?process=false',
-                    data=form,
+                    files={'file': (name, data, content_type)},
                     headers={'Authorization': f'Bearer {token}', 'Accept': 'application/json'},
-                ) as r:
-                    if r.status != 200:
-                        raise ToolError(f'could not store the translated file (Open WebUI answered HTTP {r.status}).')
-                    body = await r.json()
-        except (TimeoutError, aiohttp.ClientError, OSError) as e:
+                )
+        except (httpx.TransportError, OSError) as e:
             raise ToolError(f'could not store the translated file ({type(e).__name__}).') from None
-        file_id = body.get('id') if isinstance(body, dict) else None
+        if r.status_code != 200:
+            raise ToolError(f'could not store the translated file (Open WebUI answered HTTP {r.status_code}).')
+        try:
+            file_id = r.json().get('id')
+        except (ValueError, AttributeError):
+            file_id = None
         if not file_id:
             raise ToolError('could not store the translated file (no file id returned).')
         return file_id

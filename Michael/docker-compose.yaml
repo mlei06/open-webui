@@ -14,6 +14,8 @@ services:
       - .env
     environment:
       ENABLE_OLLAMA_API: "false"
+      # Encrypt tool valves (the translator API key) at rest. Needs a stable WEBUI_SECRET_KEY.
+      ENABLE_VALVE_ENCRYPTION: ${ENABLE_VALVE_ENCRYPTION:-true}
       # Fallback for the in-container CA path; .env may override it.
       AIOHTTP_CLIENT_SSL_CERT_FILE: ${AIOHTTP_CLIENT_SSL_CERT_FILE:-/certs/ca-bundle.pem}
     volumes:

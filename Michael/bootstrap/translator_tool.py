@@ -5,8 +5,9 @@ Sets up, through the authenticated admin API (nothing is written to the
 database or the data volume directly):
 
   1. the workspace tool tools/document_translator.py (create or update), its
-     valves (gateway URL and the shared translator API key), and a public read
-     grant so every user can use it;
+     valves (gateway URL and the shared translator API key; stored encrypted at
+     rest when the server runs with ENABLE_VALVE_ENCRYPTION=true, which
+     docker-compose.yaml sets), and a public read grant so every user can use it;
   2. the translator gateway as a native MCP tool server (bearer auth, shared
      key), exposing only the read-only helpers (capabilities, status, cancel);
   3. a "Document Translator" model preset: file context off, native function
@@ -34,10 +35,12 @@ MODEL_NAME = 'Document Translator'
 PUBLIC_READ = [{'principal_type': 'user', 'principal_id': '*', 'permission': 'read'}]
 
 SYSTEM_PROMPT = (
-    'You translate documents the user attaches to the chat. The attached files are listed in an '
+    'You translate documents the user attaches to the chat. Attached files are listed in an '
     '<attached_files> tag with an id for each file.\n'
-    '- To translate an attachment, call translate_attachment with that id and the target language '
-    'code (for example zh, en, fr, de, ja). Ask the user for the target language if it is not clear.\n'
+    '- To translate an attachment, call translate_attachment with the target language code (for '
+    'example zh, en, ja, es). Ask the user for the target language if it is not clear. Leave out '
+    'file_id when one file is attached; if the tool says several files are attached, call it again '
+    'with the id of the file the user means.\n'
     '- Never read, quote, summarize or re-type the document yourself, and never ask the user to paste '
     'its text. The tool reads the file on the server.\n'
     '- When the tool returns a download link, give the user that link exactly as returned.\n'
