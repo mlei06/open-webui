@@ -8,7 +8,7 @@ Read [onboarding](docs/ONBOARDING.md) before implementation. This repository is 
 
 | Path | Purpose |
 |---|---|
-| `docs/` | Architecture, decisions, setup, and operating instructions |
+| `docs/` | Architecture, decisions, setup, and operating instructions; [Filter.md](docs/Filter.md) and [Tool.md](docs/Tool.md) explain Open WebUI filters and tools and the ones we use |
 | `mcp/mcp.json` | Declarative MCP inventory for future bootstrap |
 | `tools/` | Reviewed tool definitions/adapters (`document_translator.py`) |
 | `functions/` | Open WebUI functions (`user_context.py` filter) |
