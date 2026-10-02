@@ -33,8 +33,11 @@ def load(doc, prompts=None):
 
 
 class DeclarationTests(unittest.TestCase):
-    def test_four_presets_with_expected_ids(self):
-        self.assertEqual([x['id'] for x in PRESETS], ['lenny', 'document-translator', 'web-searcher', 'office-agent'])
+    def test_five_presets_with_expected_ids(self):
+        self.assertEqual(
+            [x['id'] for x in PRESETS],
+            ['lenny', 'document-translator', 'web-searcher', 'office-agent', 'knowledge-base-manager'],
+        )
 
     def test_default_base_model_is_gemma_not_grok(self):
         self.assertEqual(DOC['base_model'], 'gemma-4-31b-it')
@@ -43,6 +46,7 @@ class DeclarationTests(unittest.TestCase):
         ids = {k: want(k)['meta']['toolIds'] for k in BY_ID}
         self.assertEqual(ids['document-translator'], ['server:mcp:doctranslator', 'document_translator'])
         self.assertEqual(ids['web-searcher'], [])
+        self.assertEqual(ids['knowledge-base-manager'], ['knowledge_base_manager'])
         self.assertEqual(ids['office-agent'], ['server:mcp:employee_directory', 'server:mcp:mail'])
         self.assertEqual(
             set(ids['lenny']),
@@ -68,8 +72,16 @@ class DeclarationTests(unittest.TestCase):
         for k in ('lenny', 'document-translator'):
             self.assertFalse(want(k)['meta']['capabilities']['file_context'], k)
 
-    def test_translator_has_no_builtin_tools(self):
-        self.assertFalse(any(want('document-translator')['meta']['builtinTools'].values()))
+    def test_translator_has_only_the_knowledge_builtin_tool(self):
+        on = {k for k, v in want('document-translator')['meta']['builtinTools'].items() if v}
+        self.assertEqual(on, {'knowledge'})
+
+    def test_manager_reads_attached_files_in_full_and_never_searches_the_web(self):
+        m = want('knowledge-base-manager')['meta']
+        self.assertTrue(m['capabilities']['file_upload'])
+        self.assertFalse(m['capabilities']['file_context'])
+        self.assertTrue(m['builtinTools']['files'])
+        self.assertFalse(m['builtinTools']['web_search'])
 
     def test_servers_exist_in_mcp_json(self):
         declared = {s['id'] for s in json.loads((HERE / 'mcp' / 'mcp.json').read_text())['servers']}
@@ -99,6 +111,7 @@ class DeclarationTests(unittest.TestCase):
         for k in BY_ID:
             self.assertIn(k, cfg)
         self.assertEqual(cfg['web-searcher'], ['name'])
+        self.assertEqual(cfg['knowledge-base-manager'], ['name'])
 
     def test_prompts_mention_the_user_context_block_and_forbid_sending(self):
         for k in BY_ID:
@@ -107,10 +120,54 @@ class DeclarationTests(unittest.TestCase):
             self.assertIn('cannot send', BY_ID[k]['system'], k)
         self.assertIn('never read, quote', BY_ID['document-translator']['system'].lower())
 
+    def test_manager_prompt_confirms_before_overwriting_or_deleting_and_describes_results(self):
+        text = BY_ID['knowledge-base-manager']['system'].lower()
+        for needle in ('<attached_files>', 'confirm', 'overwrite', 'delete', 'indexed', 'duplicate', 'markdown'):
+            self.assertIn(needle, text, needle)
+
     def test_no_secrets_or_internal_hosts_in_prompts(self):
         for x in PRESETS:
             for bad in ('lenovo', 'password', 'http://', 'https://'):
                 self.assertNotIn(bad, x['system'].lower(), x['id'])
+
+
+KB = {'id': 'kb-1', 'name': 'SOPs', 'description': 'seed'}
+
+
+class KnowledgeTests(unittest.TestCase):
+    def test_every_preset_attaches_the_sops_base_by_default_and_turns_on_the_knowledge_tool(self):
+        for k in BY_ID:
+            self.assertEqual(BY_ID[k]['knowledge_bases'], ['SOPs'], k)
+            w = p.desired_model(BY_ID[k], 'base-x', FILTERS, {'SOPs': KB})
+            self.assertEqual(w['meta']['knowledge'], [{'id': 'kb-1', 'name': 'SOPs', 'type': 'collection', 'description': 'seed'}], k)
+            self.assertTrue(w['meta']['builtinTools']['knowledge'], k)
+
+    def test_base_that_does_not_exist_yet_is_not_attached_but_the_tool_is_on(self):
+        w = want('lenny')
+        self.assertNotIn('knowledge', w['meta'])
+        self.assertTrue(w['meta']['builtinTools']['knowledge'])
+
+    def test_user_added_knowledge_is_kept_and_a_missing_attachment_is_detected(self):
+        w = p.desired_model(BY_ID['lenny'], 'base-x', FILTERS, {'SOPs': KB})
+        live = json.loads(json.dumps(w))
+        self.assertTrue(p.matches(live, w))
+        live['meta']['knowledge'].append({'id': 'mine', 'name': 'Mine', 'type': 'collection'})
+        self.assertTrue(p.matches(live, w))
+        merged = p.merge_knowledge(live['meta']['knowledge'], w['meta']['knowledge'])
+        self.assertEqual([k['id'] for k in merged], ['kb-1', 'mine'])
+        del live['meta']['knowledge'][0]
+        self.assertFalse(p.matches(live, w))
+        live['meta']['knowledge'] = [{**w['meta']['knowledge'][0], 'name': 'Old name'}]
+        self.assertFalse(p.matches(live, w))
+
+    def test_unknown_knowledge_base_id_is_rejected(self):
+        doc = json.loads(p.PRESETS_JSON.read_text())
+        doc['knowledge_bases'] = ['nope']
+        with self.assertRaises(p.ConfigError):
+            load(doc)
+        doc = json.loads(p.PRESETS_JSON.read_text())
+        doc['presets'][2]['knowledge_bases'] = []
+        self.assertEqual(load(doc)[1][2]['knowledge_bases'], [])
 
 
 class ValidationTests(unittest.TestCase):
@@ -158,7 +215,9 @@ class MatchTests(unittest.TestCase):
             self.assertFalse(p.matches(m, want('lenny')))
 
     def test_missing_refs_notes_unregistered_mail(self):
-        got = p.missing_refs(PRESETS, FILTERS, {'doctranslator', 'employee_directory'}, {'document_translator'}, {'user_context'})
+        got = p.missing_refs(
+            PRESETS, FILTERS, {'doctranslator', 'employee_directory'}, {'document_translator', 'knowledge_base_manager'}, {'user_context'}
+        )
         self.assertEqual({(a, c, d) for a, _, c, d in got}, {('lenny', 'mail', False), ('office-agent', 'mail', False)})
         got = p.missing_refs(PRESETS, FILTERS, {'mail'}, set(), set())
         self.assertTrue(any(k == 'filter function' for _, k, _, _ in got))

@@ -10,11 +10,12 @@ Read [onboarding](docs/ONBOARDING.md) before implementation. This repository is 
 |---|---|
 | `docs/` | Architecture, decisions, setup, and operating instructions; [Filter.md](docs/Filter.md), [Tool.md](docs/Tool.md) and [Events.md](docs/Events.md) explain Open WebUI filters, tools and event functions and the ones we use; [ExternalToolServers.md](docs/ExternalToolServers.md) covers external tool servers (MCP and OpenAPI), `mcp.json` and the employee directory |
 | `mcp/mcp.json` | Declared external tool servers (translator gateway, employee directory) with `mcp.schema.json`; registered by `bootstrap/mcp_servers.py` |
-| `tools/` | Reviewed tool definitions/adapters (`document_translator.py`) |
+| `tools/` | Reviewed tool definitions/adapters (`document_translator.py`, `knowledge_base_manager.json` tool export) |
+| `knowledge/` | Seed knowledge bases: `manifest.json` names each knowledge base, its description and files; the Markdown files (`sops/`) are the committed copy |
 | `functions/` | Open WebUI functions (`user_context.py` filter, `audit_log.py` event function) |
 | `prompts/` | Versioned system prompts, one file per preset |
 | `models/` | `presets.json` declares the model presets; `user-context.json` sets which user fields each model receives |
-| `bootstrap/` | Authenticated, idempotent provisioning (`build_ca_bundle.py`, `davy_connection.py`, `xai_connection.py`, `mcp_servers.py`, `presets.py`, `seed_employees.py`, `translator_tool.py`, `user_context.py`, `audit_log.py`, `branding.py`) |
+| `bootstrap/` | Authenticated, idempotent provisioning (`build_ca_bundle.py`, `davy_connection.py`, `xai_connection.py`, `mcp_servers.py`, `presets.py`, `knowledge_bases.py`, `kb_manager_tool.py`, `pptx_to_markdown.py`, `seed_employees.py`, `translator_tool.py`, `user_context.py`, `audit_log.py`, `branding.py`) |
 | `services/` | Local MCP/bridge/worker container build contexts (a checkout of the employee-directory source can sit here; see `EMPLOYEE_DIRECTORY_SRC`) |
 | `tests/` | Filter and audit-log unit tests, throwaway-stack end-to-end check, model-request log proxy; `fixtures/` holds synthetic test files only |
 | `runtime/` | Ignored certificates, secrets, local data |
@@ -105,7 +106,7 @@ How external tool servers work in Open WebUI, the `mcp.json` reference, how to a
 
 ## Bootstrap: model presets
 
-`models/presets.json` declares four ready-made models; `bootstrap/presets.py` creates or updates them through the admin API (same conventions as the other scripts: admin credentials from `.env`, PASS/FAIL lines, secrets never printed, standard library only). Each preset has its system prompt (`prompts/<name>.md`), native function calling, its tool list, capabilities, built-in tools, default features and the `user_context` filter attached.
+`models/presets.json` declares five ready-made models; `bootstrap/presets.py` creates or updates them through the admin API (same conventions as the other scripts: admin credentials from `.env`, PASS/FAIL lines, secrets never printed, standard library only). Each preset has its system prompt (`prompts/<name>.md`), native function calling, its tool list, capabilities, built-in tools, default features and the `user_context` filter attached.
 
 | Preset (id) | Tools | Web search | Notes |
 |---|---|---|---|
@@ -113,6 +114,9 @@ How external tool servers work in Open WebUI, the `mcp.json` reference, how to a
 | Document Translator (`document-translator`) | `doctranslator` MCP connection and the Document Translator tool only | off | file context off: the model never sees document text |
 | Web Searcher (`web-searcher`) | built-in web search and time only | on by default | sees only the user's name; answers with sources |
 | Office Agent (`office-agent`) | employee directory and mail | off | drafts mail for the user to review and send; can attach chat files through the mail tool |
+| Knowledge Base Manager (`knowledge-base-manager`) | Knowledge Base Manager tool, built-in files, time | off | turns an attached file into a knowledge base entry; asks before overwriting or deleting; see [Bootstrap: knowledge bases](#bootstrap-knowledge-bases) |
+
+Every preset also gets the knowledge bases listed in the top-level `knowledge_bases` of `presets.json` (today `sops`, an id from `knowledge/manifest.json`; a preset can override the list with its own `knowledge_bases`) and the built-in knowledge tool, which is how a model with native function calling searches them. Knowledge a user attached to a preset in the app is kept. A base that is not created yet is a `[NOTE]`; run `knowledge_bases.py`, then re-run `presets.py`.
 
 **Mail.** The `mail` connection (declared in `mcp/mcp.json`, registered by `mcp_servers.py`) is the draft-only MCP channel of the mail service: create, update, get, list and discard a draft, no send tool. It carries the key `MAIL_MCP_API_KEY` as a bearer token and the identity headers `X-User-Email`, `X-Chat-Id` and `X-Message-Id`, which Open WebUI fills per call (the `headers` entry of `mcp.json`); the service derives the From address from the user, never from the model: the user's own company address, otherwise `MAIL_SHARED_SENDER` (`lenny@lenovo.com`). There is no redirect switch (compose sets `MAIL_REDIRECT_ALL=off`). Sending is the **Review and send email** Action (`functions/mail_review.py`, declared under `actions` in `presets.json`, installed and activated by `presets.py`, attached only to Lenny and the Office Agent): the envelope button under an assistant message opens the chat's newest unsent draft in an editable form (From read-only, To, Cc, Subject, Message, and a tick list of the chat files the model suggested through `suggested_attachment_ids`). Pressing Send makes the Action upload the ticked files from Open WebUI's file store to the mail service and send, using the clicking user's own session token, which the model never sees. Attachment bytes never pass through the model; the service enforces its limits (5 files, 10 MB each, 20 MB total, executables and macro documents refused).
 
@@ -126,11 +130,31 @@ Base model: one setting. `--base-model`, else `PRESETS_BASE_MODEL`, else `TRANSL
 python3 Michael/bootstrap/mcp_servers.py
 python3 Michael/bootstrap/user_context.py
 python3 Michael/bootstrap/translator_tool.py
+python3 Michael/bootstrap/knowledge_bases.py
+python3 Michael/bootstrap/kb_manager_tool.py
 python3 Michael/bootstrap/presets.py --check   # exit 1 if a preset differs
 python3 Michael/bootstrap/presets.py
 ```
 
 Re-runs change nothing; only the settings `presets.json` declares are managed, other fields of a preset edited in the UI are kept. To change a prompt, edit its file and re-run. `tests/test_presets.py` and `tests/test_mail_review.py` hold the unit tests (`python3 Michael/tests/test_presets.py`; the Action's tests need `httpx` and `pydantic`, for example `uv run --no-project --with httpx --with pydantic python Michael/tests/test_mail_review.py`). Tool visibility is per connection: a preset sees every tool its connection exposes (after the `function_name_filter_list`).
+
+## Bootstrap: knowledge bases
+
+`knowledge/manifest.json` declares the knowledge bases (id, name, description, files) and `knowledge/` holds the committed Markdown. The first one, **SOPs**, holds `sops/path-sop.md` (PATH, the package arrival tracking system: who to ask, setup, pickup, check-in) and `sops/ai-video-workflow.md` (the AI video creation workflow), converted from the source PowerPoint decks with `bootstrap/pptx_to_markdown.py`: every slide's text, tables and speaker notes, with link targets; images and videos are left out and the large .pptx files are not committed. Each file starts with an overview that names the owner and who to ask. Knowledge base text is public in this repository, so review a deck before converting it (the PATH deck contains internal network addresses).
+
+`bootstrap/knowledge_bases.py` creates each knowledge base (matched by exact name) with a public read grant and uploads every seed file that is missing, waiting until Open WebUI has extracted and indexed it. It never deletes anything and leaves users' own files, folders and edits alone: a seed file whose live text differs from the committed copy is reported as a `[NOTE]` and only overwritten with `--update`. The knowledge base name is its identity; if it is renamed in the app, rename it in the manifest too, or the next run creates a new one.
+
+```
+python3 Michael/bootstrap/knowledge_bases.py --check   # exit 1 if a knowledge base or seed file is missing
+python3 Michael/bootstrap/knowledge_bases.py           # create what is missing
+python3 Michael/bootstrap/knowledge_bases.py --update  # also overwrite files edited in the app with the committed seed
+python3 Michael/bootstrap/kb_manager_tool.py           # import the Knowledge Base Manager tool
+python3 Michael/bootstrap/presets.py                   # attach the knowledge base to every preset
+```
+
+To add a document to the seed: put the Markdown under `knowledge/`, list it in `manifest.json`, run the script. Users can also drop a new file into a chat with the **Knowledge Base Manager** preset and ask it to create an entry; entries made that way live in the app's data volume and are not committed.
+
+**Knowledge Base Manager tool.** `tools/knowledge_base_manager.json` is an Open WebUI tool export, imported by `bootstrap/kb_manager_tool.py` (compared by source, so re-runs change nothing) and readable by every user. It talks to Open WebUI's own API at `http://127.0.0.1:8080` (inside the container) with the signed-in user's own token, so it can only do what that user may do: it has no valves, stores no secrets and logs nothing. Reviewed behaviour: all deletions of files and knowledge bases need `confirm=true`, and a non-empty knowledge base needs `allow_nonempty=true` as well; the model, not the user interface, supplies those flags, so the preset prompt makes it ask the user first. Deleting a file removes it from every knowledge base that uses it. `delete_knowledge_directory` has no confirmation flag (its files move to the parent folder), and `upsert`/`update` replace file content without one. New knowledge bases are private to the user. The seed knowledge base has public read only, so a non-admin user cannot change it through the tool; give a group write access in the app if you want that. `tests/test_knowledge_bases.py` holds the unit tests.
 
 ## Bootstrap: user context for every model
 

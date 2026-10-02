@@ -1,0 +1,15 @@
+Badge Printer Replacement - SOP (synthetic test document)
+
+Owner: Jordan Example (Facilities). For questions about the badge printer ask Jordan Example, facilities-example@example.test.
+
+When to use: the badge printer shows the red "Ribbon empty" light or prints blank badges.
+
+Steps:
+1. Power the printer off with the switch on the back.
+2. Open the side cover and pull out the empty ribbon cartridge.
+3. Slide in a new cartridge from the supply cabinet, shelf B, until it clicks.
+4. Close the cover, power on and print one test badge.
+5. If the test badge is blank, stop and contact Jordan Example; do not open the print head.
+
+Decision: order a replacement printer instead of a ribbon when more than two ribbons fail in a month.
+Cartridge supply is reordered by Facilities every first Monday.

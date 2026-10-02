@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "base_model": "gemma-4-31b-it",
   "filter_ids": ["user_context"],
+  "knowledge_bases": ["sops"],
   "actions": [
     {
       "id": "mail_review",
@@ -115,6 +116,31 @@
       "builtin_tools": ["time", "user_input"],
       "default_features": [],
       "params": {"temperature": 0.3}
+    },
+    {
+      "id": "knowledge-base-manager",
+      "name": "Knowledge Base Manager",
+      "description": "Creates, updates and organises your knowledge bases from files you attach (for example a new SOP). Asks before deleting or overwriting.",
+      "prompt": "knowledge-base-manager.md",
+      "tools": [
+        {"tool": "knowledge_base_manager"}
+      ],
+      "capabilities": {
+        "file_upload": true,
+        "file_context": false,
+        "web_search": false,
+        "image_generation": false,
+        "code_interpreter": false,
+        "terminal": false,
+        "memory": false,
+        "builtin_tools": true,
+        "citations": true,
+        "status_updates": true,
+        "usage": false
+      },
+      "builtin_tools": ["time", "user_input", "files"],
+      "default_features": [],
+      "params": {"temperature": 0.2}
     }
   ]
 }

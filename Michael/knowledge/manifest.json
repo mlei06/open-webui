@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "knowledge_bases": [
+    {
+      "id": "sops",
+      "name": "SOPs",
+      "description": "Standard operating procedures: the PATH package tracking system (who to ask, setup, pickup, check-in) and the AI video creation workflow (HyperFrames, ComfyUI, ElevenLabs).",
+      "files": [
+        "sops/path-sop.md",
+        "sops/ai-video-workflow.md"
+      ]
+    }
+  ]
+}

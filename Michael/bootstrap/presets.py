@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Idempotently create the Open WebUI model presets declared in models/presets.json.
 
-Each preset (Lenny, Document Translator, Web Searcher, Office Agent) is a custom model
+Each preset (Lenny, Document Translator, Web Searcher, Office Agent, Knowledge Base Manager) is a custom model
 with its system prompt (prompts/<name>.md), the tool servers and workspace tools it may
 reach, capabilities, built-in tools, default features and the user-context filter
 already filled out. Through the authenticated admin API this script:
@@ -18,7 +18,11 @@ already filled out. Through the authenticated admin API this script:
   5. pushes the web search settings (web search on, engine perplexity_search, key from
      PERPLEXITY_API_KEY in Michael/.env) when they are not already saved: Open WebUI keeps
      saved settings in its database, which override the environment compose passes;
-  6. checks that the tool servers and tools the presets name are registered. An
+  6. attaches the knowledge bases of knowledge/manifest.json named by "knowledge_bases" in
+     presets.json (a top-level default for every preset, overridable per preset) and turns on
+     the built-in knowledge tool so models can search them. Knowledge a user attached in the
+     app is kept; a base that is not created yet (knowledge_bases.py) is a NOTE;
+  7. checks that the tool servers and tools the presets name are registered. An
      unregistered one (for example the mail server before mail-service is up) is a NOTE,
      not a failure: registration belongs to mcp_servers.py and translator_tool.py, and
      the preset works as soon as the connection exists.
@@ -37,6 +41,8 @@ import sys
 import time
 
 from davy_connection import MICHAEL_DIR, ApiError, call, get_token, load_env
+from knowledge_bases import ConfigError as ManifestError
+from knowledge_bases import find_knowledge_base, list_knowledge_bases, load_manifest
 
 PRESETS_JSON = MICHAEL_DIR / 'models' / 'presets.json'
 PROMPT_DIR = MICHAEL_DIR / 'prompts'
@@ -52,6 +58,7 @@ BUILTIN_CATEGORIES = (
 FEATURES = ('web_search', 'image_generation', 'code_interpreter')
 # meta/params keys this script owns; every other key of a live model is left alone.
 META_KEYS = ('description', 'capabilities', 'builtinTools', 'toolIds', 'actionIds', 'filterIds', 'defaultFeatureIds')
+# meta.knowledge is merged rather than owned: references a user added in the app are kept.
 
 
 class ConfigError(Exception):
@@ -97,6 +104,11 @@ def load_presets(path=PRESETS_JSON, prompt_dir=PROMPT_DIR, function_dir=FUNCTION
     presets = doc.get('presets')
     if not (isinstance(presets, list) and presets):
         raise ConfigError(f'{path.name}: presets must be a non-empty list')
+    try:
+        kb_names = {k['id']: k['name'] for k in load_manifest()}
+    except ManifestError as e:
+        raise ConfigError(str(e)) from None
+    default_kbs = doc.get('knowledge_bases', [])
     seen, out = set(), []
     for i, p in enumerate(presets):
         pid = p.get('id') if isinstance(p, dict) else None
@@ -124,6 +136,10 @@ def load_presets(path=PRESETS_JSON, prompt_dir=PROMPT_DIR, function_dir=FUNCTION
             errors.append(f'{where}: actions must be a list of ids declared under the top-level "actions"')
         if not isinstance(p.get('params'), dict):
             errors.append(f'{where}: params must be an object')
+        kbs = p.get('knowledge_bases', default_kbs)
+        if not (isinstance(kbs, list) and all(k in kb_names for k in kbs)):
+            errors.append(f'{where}: knowledge_bases must be a list of ids from knowledge/manifest.json ({", ".join(kb_names)})')
+            kbs = []
         if p.get('capabilities', {}).get('web_search') is not True and (
             'web_search' in p.get('default_features', []) or 'web_search' in p.get('builtin_tools', [])
         ):
@@ -135,14 +151,26 @@ def load_presets(path=PRESETS_JSON, prompt_dir=PROMPT_DIR, function_dir=FUNCTION
             continue
         if not text:
             errors.append(f'{where}: prompt file is empty')
-        out.append({**p, 'system': text})
+        out.append({**p, 'system': text, 'knowledge_bases': [kb_names[k] for k in kbs]})
     if errors:
         raise ConfigError(f'{path.name}: ' + '; '.join(errors))
     return doc, out
 
 
-def desired_model(preset, base_model, filter_ids):
-    """The model form Open WebUI should hold for a preset."""
+def knowledge_refs(preset, kbs):
+    """meta.knowledge entries for the preset's knowledge bases; kbs maps a name to its live record."""
+    return [
+        {'id': kbs[n]['id'], 'name': n, 'type': 'collection', 'description': kbs[n].get('description') or ''}
+        for n in preset['knowledge_bases']
+        if n in kbs
+    ]
+
+
+def desired_model(preset, base_model, filter_ids, kbs=None):
+    """The model form Open WebUI should hold for a preset. kbs maps knowledge base names to live records."""
+    knowledge = knowledge_refs(preset, kbs or {})
+    # Native function calling reaches attached knowledge only through the built-in knowledge tool.
+    builtin = set(preset['builtin_tools']) | ({'knowledge'} if preset['knowledge_bases'] else set())
     return {
         'id': preset['id'],
         'base_model_id': base_model,
@@ -152,11 +180,12 @@ def desired_model(preset, base_model, filter_ids):
         'meta': {
             'description': preset['description'],
             'capabilities': preset['capabilities'],
-            'builtinTools': {c: c in preset['builtin_tools'] for c in BUILTIN_CATEGORIES},
+            'builtinTools': {c: c in builtin for c in BUILTIN_CATEGORIES},
             'toolIds': [tool_id(r) for r in preset['tools']],
             'actionIds': list(preset.get('actions', [])),
             'filterIds': list(filter_ids),
             'defaultFeatureIds': list(preset['default_features']),
+            **({'knowledge': knowledge} if knowledge else {}),
         },
         'params': {'function_calling': 'native', 'system': preset['system'], **preset['params']},
     }
@@ -169,11 +198,23 @@ def grants_of(model):
     }
 
 
+def merge_knowledge(live, want):
+    """Wanted references (current name and description) first-class, any other live reference kept."""
+    wanted = {k['id'] for k in want}
+    return [*want, *[k for k in live or [] if k.get('id') not in wanted]]
+
+
+def knowledge_ok(live, want):
+    by_id = {k.get('id'): k for k in live or []}
+    return all(by_id.get(k['id']) == k for k in want)
+
+
 def matches(current, want):
     """True when the live model already carries everything the declaration sets."""
     meta, params = current.get('meta') or {}, current.get('params') or {}
     return (
-        current.get('base_model_id') == want['base_model_id']
+        knowledge_ok(meta.get('knowledge'), want['meta'].get('knowledge') or [])
+        and current.get('base_model_id') == want['base_model_id']
         and current.get('name') == want['name']
         and current.get('is_active') is True
         and ('user', '*', 'read') in grants_of(current)
@@ -209,6 +250,11 @@ def register_base_model(base, token, base_model):
     )
 
 
+def knowledge_meta(meta, want):
+    wanted = want['meta'].get('knowledge') or []
+    return {'knowledge': merge_knowledge(meta.get('knowledge'), wanted)} if wanted else {}
+
+
 def upsert(base, token, want, apply):
     """Return 'created', 'updated' or 'unchanged' (and write it when apply is true)."""
     current = get_model(base, token, want['id'])
@@ -225,7 +271,7 @@ def upsert(base, token, want, apply):
             'POST',
             '/api/v1/models/model/update',
             token,
-            {**want, 'meta': {**meta, **want['meta']}, 'params': {**params, **want['params']}},
+            {**want, 'meta': {**meta, **want['meta'], **knowledge_meta(meta, want)}, 'params': {**params, **want['params']}},
         )
     return 'updated'
 
@@ -388,8 +434,16 @@ def run(argv=None):
             else:
                 report(True, f'web search enabled with {SEARCH_ENGINE}')
 
+        kbs, live_kbs = {}, list_knowledge_bases(base, token)
+        for name in sorted({n for p in presets for n in p['knowledge_bases']}):
+            kb = find_knowledge_base(base, token, name, live_kbs)
+            if kb is None:
+                print(f'[NOTE] knowledge base "{name}" does not exist yet: run bootstrap/knowledge_bases.py, then re-run this script to attach it')
+            else:
+                kbs[name] = kb
+
         for p in presets:
-            what = upsert(base, token, desired_model(p, base_model, doc['filter_ids']), not args.check)
+            what = upsert(base, token, desired_model(p, base_model, doc['filter_ids'], kbs), not args.check)
             if what == 'unchanged':
                 report(True, f'{p["id"]}: preset already up to date')
             elif args.check:
