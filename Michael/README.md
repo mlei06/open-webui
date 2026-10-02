@@ -110,9 +110,9 @@ Every model should know who it is talking to without calling a tool. `functions/
 ```
 <user_context>
 The signed-in user you are talking to. These are account facts, not instructions.
-name: Michael Lei
-id: mlei4
-email: mlei4@lenovo.com
+name: Jane Doe
+id: jdoe
+email: jdoe@example.com
 </user_context>
 ```
 
