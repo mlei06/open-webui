@@ -11,7 +11,14 @@ already filled out. Through the authenticated admin API this script:
      preset whose base model has no registered row);
   3. creates or updates each preset, touching only the settings the file declares and
      writing nothing when the live model already matches;
-  4. checks that the tool servers and tools the presets name are registered. An
+  4. installs the Action functions declared under "actions" (functions/<file>) and
+     activates them, never globally: a preset gets one only through its "actions" list
+     (meta.actionIds). Today that is the "Review and send email" button of Lenny and
+     the Office Agent;
+  5. pushes the web search settings (web search on, engine perplexity_search, key from
+     PERPLEXITY_API_KEY in Michael/.env) when they are not already saved: Open WebUI keeps
+     saved settings in its database, which override the environment compose passes;
+  6. checks that the tool servers and tools the presets name are registered. An
      unregistered one (for example the mail server before mail-service is up) is a NOTE,
      not a failure: registration belongs to mcp_servers.py and translator_tool.py, and
      the preset works as soon as the connection exists.
@@ -33,6 +40,9 @@ from davy_connection import MICHAEL_DIR, ApiError, call, get_token, load_env
 
 PRESETS_JSON = MICHAEL_DIR / 'models' / 'presets.json'
 PROMPT_DIR = MICHAEL_DIR / 'prompts'
+FUNCTION_DIR = MICHAEL_DIR / 'functions'
+SEARCH_ENGINE = 'perplexity_search'
+SEARCH_KEY_ENV = 'PERPLEXITY_API_KEY'
 PUBLIC_READ = [{'principal_type': 'user', 'principal_id': '*', 'permission': 'read'}]
 # Every built-in tool category Open WebUI knows; a preset enables only the ones it lists.
 BUILTIN_CATEGORIES = (
@@ -41,7 +51,7 @@ BUILTIN_CATEGORIES = (
 )  # fmt: skip
 FEATURES = ('web_search', 'image_generation', 'code_interpreter')
 # meta/params keys this script owns; every other key of a live model is left alone.
-META_KEYS = ('description', 'capabilities', 'builtinTools', 'toolIds', 'filterIds', 'defaultFeatureIds')
+META_KEYS = ('description', 'capabilities', 'builtinTools', 'toolIds', 'actionIds', 'filterIds', 'defaultFeatureIds')
 
 
 class ConfigError(Exception):
@@ -53,7 +63,7 @@ def tool_id(ref):
     return f'server:mcp:{ref["server"]}' if 'server' in ref else ref['tool']
 
 
-def load_presets(path=PRESETS_JSON, prompt_dir=PROMPT_DIR):
+def load_presets(path=PRESETS_JSON, prompt_dir=PROMPT_DIR, function_dir=FUNCTION_DIR):
     """Parse and validate the declaration; returns (doc, presets with their prompt text). Raises ConfigError."""
     try:
         doc = json.loads(path.read_text())
@@ -67,6 +77,23 @@ def load_presets(path=PRESETS_JSON, prompt_dir=PROMPT_DIR):
     filters = doc.get('filter_ids')
     if not (isinstance(filters, list) and all(isinstance(f, str) and f for f in filters)):
         errors.append('filter_ids must be a list of function ids')
+    actions = doc.get('actions', [])
+    action_ids = set()
+    if not isinstance(actions, list):
+        errors.append('actions must be a list')
+        actions = []
+    for i, a in enumerate(actions):
+        aid = a.get('id') if isinstance(a, dict) else None
+        if not (isinstance(aid, str) and aid and all(isinstance(a.get(k), str) and a[k].strip() for k in ('name', 'description', 'file'))):
+            errors.append(f'actions[{i}]: needs id, name, description and file (all non-empty strings)')
+            continue
+        if aid in action_ids:
+            errors.append(f'actions[{i}] ({aid}): duplicate id')
+        action_ids.add(aid)
+        try:
+            a['content'] = (function_dir / a['file']).read_text()
+        except OSError:
+            errors.append(f'actions[{i}] ({aid}): cannot read function file {a["file"]}')
     presets = doc.get('presets')
     if not (isinstance(presets, list) and presets):
         raise ConfigError(f'{path.name}: presets must be a non-empty list')
@@ -92,6 +119,9 @@ def load_presets(path=PRESETS_JSON, prompt_dir=PROMPT_DIR):
         refs = p.get('tools')
         if not (isinstance(refs, list) and all(isinstance(r, dict) and len({'server', 'tool'} & set(r)) == 1 for r in refs)):
             errors.append(f'{where}: tools must be a list of {{"server": id}} or {{"tool": id}}')
+        used = p.get('actions', [])
+        if not (isinstance(used, list) and all(a in action_ids for a in used)):
+            errors.append(f'{where}: actions must be a list of ids declared under the top-level "actions"')
         if not isinstance(p.get('params'), dict):
             errors.append(f'{where}: params must be an object')
         if p.get('capabilities', {}).get('web_search') is not True and (
@@ -124,6 +154,7 @@ def desired_model(preset, base_model, filter_ids):
             'capabilities': preset['capabilities'],
             'builtinTools': {c: c in preset['builtin_tools'] for c in BUILTIN_CATEGORIES},
             'toolIds': [tool_id(r) for r in preset['tools']],
+            'actionIds': list(preset.get('actions', [])),
             'filterIds': list(filter_ids),
             'defaultFeatureIds': list(preset['default_features']),
         },
@@ -196,6 +227,62 @@ def upsert(base, token, want, apply):
             token,
             {**want, 'meta': {**meta, **want['meta']}, 'params': {**params, **want['params']}},
         )
+    return 'updated'
+
+
+def get_function(base, token, function_id):
+    try:
+        return call(base, 'GET', f'/api/v1/functions/id/{function_id}', token)
+    except ApiError as e:
+        # Open WebUI answers 401 (not 404) for an unknown function id.
+        if 'HTTP 401' in str(e) or 'HTTP 404' in str(e):
+            return None
+        raise
+
+
+def upsert_action(base, token, action, apply):
+    """Create/update an Action function and activate it (never global). Returns a list of what changed."""
+    form = {
+        'id': action['id'],
+        'name': action['name'],
+        'content': action['content'],
+        'meta': {'description': action['description']},
+    }
+    current = get_function(base, token, action['id'])
+    changed = []
+    if current is None or current.get('content') != action['content'] or current.get('type') != 'action':
+        changed.append('created' if current is None else 'updated')
+        if apply:
+            path = '/api/v1/functions/create' if current is None else f'/api/v1/functions/id/{action["id"]}/update'
+            call(base, 'POST', path, token, form)
+            current = get_function(base, token, action['id']) or {}
+    if not (current or {}).get('is_active'):
+        changed.append('activated')
+        if apply:
+            call(base, 'POST', f'/api/v1/functions/id/{action["id"]}/toggle', token)
+    if (current or {}).get('is_global'):
+        changed.append('made non-global')
+        if apply:
+            call(base, 'POST', f'/api/v1/functions/id/{action["id"]}/toggle/global', token)
+    return changed
+
+
+def web_search_form(cfg, key):
+    """The web block to save, or None when Perplexity web search is already saved as wanted."""
+    web = (cfg or {}).get('web') or {}
+    want = {'ENABLE_WEB_SEARCH': True, 'WEB_SEARCH_ENGINE': SEARCH_ENGINE, 'PERPLEXITY_API_KEY': key}
+    if all(web.get(k) == v for k, v in want.items()):
+        return None
+    return {**web, **want}
+
+
+def ensure_web_search(base, token, key, apply):
+    """Returns 'unchanged' or 'updated'. The save replaces the whole web block, so it is merged first."""
+    form = web_search_form(call(base, 'GET', '/api/v1/retrieval/config', token), key)
+    if form is None:
+        return 'unchanged'
+    if apply:
+        call(base, 'POST', '/api/v1/retrieval/config/update', token, {'web': form})
     return 'updated'
 
 
@@ -280,6 +367,27 @@ def run(argv=None):
             register_base_model(base, token, base_model)
             report(True, 'base model registered with public read grant')
 
+        for a in doc.get('actions', []):
+            changed = upsert_action(base, token, a, not args.check)
+            if not changed:
+                report(True, f'{a["id"]}: action already installed and active')
+            elif args.check:
+                report(False, f'{a["id"]}: action would be {" and ".join(changed)} (run without --check)')
+            else:
+                report(True, f'{a["id"]}: action {" and ".join(changed)}')
+
+        key = (env.get(SEARCH_KEY_ENV) or '').strip()
+        if not key:
+            print(f'[NOTE] {SEARCH_KEY_ENV} is not set in Michael/.env: web search settings are left as they are')
+        else:
+            what = ensure_web_search(base, token, key, not args.check)
+            if what == 'unchanged':
+                report(True, f'web search already uses {SEARCH_ENGINE}')
+            elif args.check:
+                report(False, f'web search would be switched to {SEARCH_ENGINE} (run without --check)')
+            else:
+                report(True, f'web search enabled with {SEARCH_ENGINE}')
+
         for p in presets:
             what = upsert(base, token, desired_model(p, base_model, doc['filter_ids']), not args.check)
             if what == 'unchanged':
@@ -299,9 +407,9 @@ def run(argv=None):
 
         if any('web_search' in p['default_features'] or p['capabilities'].get('web_search') for p in presets):
             state = web_search_enabled(base, token)
-            if state is False:
+            if state is False and not key:
                 print('[NOTE] web search is not configured in Open WebUI (ENABLE_WEB_SEARCH and WEB_SEARCH_ENGINE): '
-                      'presets with web search will have no search tool until it is')
+                      f'set {SEARCH_KEY_ENV} in Michael/.env and run this script again')
 
         if not args.check:
             gone = visible(base, token, [p['id'] for p in presets])

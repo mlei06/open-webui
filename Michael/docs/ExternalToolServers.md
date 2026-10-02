@@ -131,6 +131,7 @@ With native function calling (the default) the model decides when to call a tool
 | `enabled` | yes | `false` registers the server switched off. A disabled server whose variables are not set is skipped. |
 | `tools` | yes | Tool names the server must list; `verify` fails if one is missing. For OpenAPI these are operation ids. |
 | `function_name_filter_list` | no | What Open WebUI exposes to the model (suffix match, `!` blocks, see 2.6). Every entry of `tools` must pass it. Omit to expose all tools. |
+| `headers` | no | Custom request headers sent on every call, for example `{"X-User-Email": "{{USER_EMAIL}}"}`; Open WebUI fills `{{USER_EMAIL}}`, `{{USER_ID}}`, `{{USER_NAME}}`, `{{CHAT_ID}}` and `{{MESSAGE_ID}}` per call. Public-safe values only; keys go in `env` and `auth`. |
 
 Not in v1 because Open WebUI has no field for them: per-server timeouts, OAuth auth, custom headers, forwarding cookies.
 
@@ -140,6 +141,7 @@ Not in v1 because Open WebUI has no field for them: per-server timeouts, OAuth a
 |---|---|---|---|---|---|
 | `doctranslator` | `translation_capabilities`, `get_translation_status`, `cancel_translation` | `TRANSLATOR_GATEWAY_URL` (required, for example `http://host.docker.internal:8766/mcp`) | bearer, `TRANSLATOR_API_KEY` (required) | public | yes |
 | `employee_directory` | `search_employees`, `get_employee`, `get_direct_reports`, `get_management_chain` | `EMPLOYEE_DIRECTORY_MCP_URL` (`http://employee-directory:8000/mcp`) | bearer with `EMPLOYEE_MCP_API_KEY` only if set, else none | public | yes |
+| `mail` | `create_draft`, `update_draft`, `get_draft`, `list_drafts`, `discard_draft` | `MAIL_MCP_URL` (`http://mail-service:8000/mcp`) | bearer, `MAIL_MCP_API_KEY` (required); headers `X-User-Email`, `X-Chat-Id`, `X-Message-Id` | public | yes |
 | `employee_directory_write` | `search_employees`, `get_employee`, `create_employee`, `update_employee`, `delete_employee` | `EMPLOYEE_WRITE_MCP_URL` (`http://employee-directory-write:8000/mcp`) | bearer, `EMPLOYEE_WRITE_MCP_API_KEY` (required) | admin | **no** |
 
 **Translator.** The gateway offers eight tools. We expose only the three read-only helpers; the tools that carry file content as base64 are filtered out so the model never has to copy a document through its context. Translation itself runs through the Document Translator workspace tool and preset ([Tool.md](Tool.md), section 6), which attaches this connection by its id `doctranslator`. The id is therefore fixed.

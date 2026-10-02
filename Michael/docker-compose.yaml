@@ -18,6 +18,11 @@ services:
       ENABLE_VALVE_ENCRYPTION: ${ENABLE_VALVE_ENCRYPTION:-true}
       # Fallback for the in-container CA path; .env may override it.
       AIOHTTP_CLIENT_SSL_CERT_FILE: ${AIOHTTP_CLIENT_SSL_CERT_FILE:-/certs/ca-bundle.pem}
+      # Web search through the Perplexity Search API (engine perplexity_search; the older "perplexity" engine uses a chat endpoint Perplexity has retired); the key (PERPLEXITY_API_KEY) comes from .env. Open WebUI keeps
+      # saved settings in its database, so on an existing volume bootstrap/presets.py also pushes them.
+      ENABLE_WEB_SEARCH: ${ENABLE_WEB_SEARCH:-true}
+      WEB_SEARCH_ENGINE: ${WEB_SEARCH_ENGINE:-perplexity_search}
+      PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY:-}
     volumes:
       - open-webui:/app/backend/data
       - ./runtime/certs:/certs:ro
@@ -80,9 +85,47 @@ services:
       retries: 3
     restart: unless-stopped
 
+  # Mail service: draft-only MCP for the model (no send tool) and a REST API that only the signed-in
+  # user's own Open WebUI session can use to send. Built from its own source tree. Open WebUI reaches
+  # the MCP endpoint at http://mail-service:8000/mcp, and the "Review and send email" action calls
+  # the REST API from inside Open WebUI, so no port is published. It validates user sessions against
+  # Open WebUI over this project's network. The sender is the user's own company address, otherwise
+  # the shared sender; there is no redirect switch (MAIL_REDIRECT_ALL=off). SMTP settings come from
+  # .env (SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_USE_TLS) and are never committed.
+  # MAIL_PROVIDER=mock (the default) records messages in the data volume and sends nothing.
+  mail-service:
+    build:
+      # A checkout of the mail-service repository. Set in .env.
+      context: ${MAIL_SERVICE_SRC:-./services/mail-service}
+    image: ${MAIL_SERVICE_IMAGE:-michael-mail-service:local}
+    environment:
+      MAIL_PROVIDER: ${MAIL_PROVIDER:-mock}                         # mock | smtp
+      MAIL_MCP_API_KEY: ${MAIL_MCP_API_KEY:-}                       # unset = /mcp refuses everything
+      OWUI_URL: http://open-webui:8080
+      MAIL_SHARED_SENDER: ${MAIL_SHARED_SENDER:-lenny@lenovo.com}
+      MAIL_ALLOWED_DOMAINS: ${MAIL_ALLOWED_DOMAINS:-lenovo.com}
+      MAIL_ALLOW_EXTERNAL_OWNERS: ${MAIL_ALLOW_EXTERNAL_OWNERS:-true}  # users without a company address send as the shared sender
+      MAIL_REDIRECT_ALL: "off"
+      MAIL_MAX_ATTACHMENTS: ${MAIL_MAX_ATTACHMENTS:-5}
+      MAIL_MAX_ATTACHMENT_BYTES: ${MAIL_MAX_ATTACHMENT_BYTES:-10485760}
+      MAIL_MAX_TOTAL_ATTACHMENT_BYTES: ${MAIL_MAX_TOTAL_ATTACHMENT_BYTES:-20971520}
+      SMTP_HOST: ${SMTP_HOST:-localhost}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+      MAIL_SMTP_CA_FILE: ${MAIL_SMTP_CA_FILE:-}                     # in-container path, e.g. /certs/ca-bundle.pem
+    volumes:
+      - mail-service-data:/data
+      - ./runtime/certs:/certs:ro
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    restart: unless-stopped
+
 # Reuse the data volume of the original stack so existing chats carry over.
 volumes:
   employee-directory-data:
+  mail-service-data:
   open-webui:
     external: true
     name: ${OPEN_WEBUI_VOLUME:-open-webui_open-webui}

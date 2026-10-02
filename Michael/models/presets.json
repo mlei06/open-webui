@@ -2,6 +2,14 @@
   "schemaVersion": 1,
   "base_model": "gemma-4-31b-it",
   "filter_ids": ["user_context"],
+  "actions": [
+    {
+      "id": "mail_review",
+      "name": "Review and send email",
+      "description": "Button under an assistant message: opens the chat's unsent mail draft in an editable form with its attachments. Only the user's Send click sends.",
+      "file": "mail_review.py"
+    }
+  ],
   "presets": [
     {
       "id": "lenny",
@@ -12,8 +20,9 @@
         {"server": "doctranslator"},
         {"tool": "document_translator"},
         {"server": "employee_directory"},
-        {"server": "mail", "optional": true}
+        {"server": "mail"}
       ],
+      "actions": ["mail_review"],
       "capabilities": {
         "file_upload": true,
         "file_context": false,
@@ -87,8 +96,9 @@
       "prompt": "office-agent.md",
       "tools": [
         {"server": "employee_directory"},
-        {"server": "mail", "optional": true}
+        {"server": "mail"}
       ],
+      "actions": ["mail_review"],
       "capabilities": {
         "file_upload": true,
         "file_context": false,

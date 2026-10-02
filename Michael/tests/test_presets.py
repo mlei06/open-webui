@@ -71,16 +71,28 @@ class DeclarationTests(unittest.TestCase):
     def test_translator_has_no_builtin_tools(self):
         self.assertFalse(any(want('document-translator')['meta']['builtinTools'].values()))
 
-    def test_only_mail_is_optional(self):
-        opt = {r.get('server') for x in PRESETS for r in x['tools'] if r.get('optional')}
-        self.assertEqual(opt, {'mail'})
-
-    def test_servers_exist_in_mcp_json_except_mail(self):
+    def test_servers_exist_in_mcp_json(self):
         declared = {s['id'] for s in json.loads((HERE / 'mcp' / 'mcp.json').read_text())['servers']}
         for x in PRESETS:
             for r in x['tools']:
-                if 'server' in r and r['server'] != 'mail':
+                if 'server' in r:
                     self.assertIn(r['server'], declared)
+
+    def test_mail_action_only_on_lenny_and_office(self):
+        for k in BY_ID:
+            on = k in ('lenny', 'office-agent')
+            self.assertEqual(want(k)['meta']['actionIds'], ['mail_review'] if on else [], k)
+            self.assertEqual('server:mcp:mail' in want(k)['meta']['toolIds'], on, k)
+
+    def test_mail_action_is_declared_and_loaded(self):
+        self.assertEqual([a['id'] for a in DOC['actions']], ['mail_review'])
+        self.assertIn('class Action', DOC['actions'][0]['content'])
+
+    def test_mail_prompts_use_the_button_and_attachment_ids(self):
+        for k in ('lenny', 'office-agent'):
+            text = BY_ID[k]['system']
+            self.assertIn('Review and send email', text, k)
+            self.assertIn('suggested_attachment_ids', text, k)
 
     def test_user_context_config_covers_every_preset(self):
         cfg = json.loads((HERE / 'models' / 'user-context.json').read_text())['models']
@@ -112,6 +124,8 @@ class ValidationTests(unittest.TestCase):
         d = copy.deepcopy(base); d['presets'][3]['default_features'] = ['web_search']; cases.append(d)
         d = copy.deepcopy(base); d['presets'][0]['capabilities']['vision'] = 'yes'; cases.append(d)
         d = copy.deepcopy(base); d['base_model'] = ' '; cases.append(d)
+        d = copy.deepcopy(base); d['presets'][0]['actions'] = ['nope']; cases.append(d)
+        d = copy.deepcopy(base); d['actions'][0]['file'] = 'missing.py'; cases.append(d)
         for doc in cases:
             with self.assertRaises(p.ConfigError, msg=json.dumps(doc)[:60]):
                 load(doc)
@@ -143,12 +157,29 @@ class MatchTests(unittest.TestCase):
             mutate(m)
             self.assertFalse(p.matches(m, want('lenny')))
 
-    def test_missing_refs_notes_optional_mail(self):
+    def test_missing_refs_notes_unregistered_mail(self):
         got = p.missing_refs(PRESETS, FILTERS, {'doctranslator', 'employee_directory'}, {'document_translator'}, {'user_context'})
-        self.assertEqual({(a, c, d) for a, _, c, d in got}, {('lenny', 'mail', True), ('office-agent', 'mail', True)})
+        self.assertEqual({(a, c, d) for a, _, c, d in got}, {('lenny', 'mail', False), ('office-agent', 'mail', False)})
         got = p.missing_refs(PRESETS, FILTERS, {'mail'}, set(), set())
         self.assertTrue(any(k == 'filter function' for _, k, _, _ in got))
         self.assertTrue(any(k == 'workspace tool' and not o for _, k, _, o in got))
+
+
+class WebSearchTests(unittest.TestCase):
+    def test_unchanged_when_perplexity_is_saved(self):
+        web = {'ENABLE_WEB_SEARCH': True, 'WEB_SEARCH_ENGINE': 'perplexity_search', 'PERPLEXITY_API_KEY': 'k'}
+        self.assertIsNone(p.web_search_form({'web': web}, 'k'))
+
+    def test_merges_into_the_existing_web_block(self):
+        cfg = {'web': {'ENABLE_WEB_SEARCH': False, 'WEB_SEARCH_ENGINE': '', 'PERPLEXITY_API_KEY': '', 'WEB_SEARCH_RESULT_COUNT': 3}}
+        form = p.web_search_form(cfg, 'k')
+        self.assertEqual(form['WEB_SEARCH_RESULT_COUNT'], 3)
+        self.assertEqual((form['ENABLE_WEB_SEARCH'], form['WEB_SEARCH_ENGINE'], form['PERPLEXITY_API_KEY']), (True, 'perplexity_search', 'k'))
+        self.assertIsNotNone(p.web_search_form({}, 'k'))
+
+    def test_changed_key_is_detected(self):
+        web = {'ENABLE_WEB_SEARCH': True, 'WEB_SEARCH_ENGINE': 'perplexity_search', 'PERPLEXITY_API_KEY': 'old'}
+        self.assertIsNotNone(p.web_search_form({'web': web}, 'new'))
 
 
 if __name__ == '__main__':

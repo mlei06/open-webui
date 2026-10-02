@@ -29,7 +29,7 @@ def write_doc(tmp, doc):
 
 class InventoryTests(unittest.TestCase):
     def test_shipped_inventory_is_valid(self):
-        self.assertEqual(set(BY_ID), {'doctranslator', 'employee_directory', 'employee_directory_write'})
+        self.assertEqual(set(BY_ID), {'doctranslator', 'employee_directory', 'mail', 'employee_directory_write'})
         self.assertFalse(BY_ID['employee_directory_write']['enabled'])
         self.assertEqual(BY_ID['employee_directory_write']['access'], {'type': 'admin'})
 
@@ -85,6 +85,18 @@ class ConnectionTests(unittest.TestCase):
         self.assertEqual((want('employee_directory')['auth_type'], want('employee_directory')['key']), ('none', ''))
         c = want('employee_directory', {'EMPLOYEE_MCP_API_KEY': 'k2'})
         self.assertEqual((c['auth_type'], c['key']), ('bearer', 'k2'))
+
+    def test_mail_connection_sends_identity_headers_and_key(self):
+        c = want('mail', {'MAIL_MCP_API_KEY': 'k-mail'})
+        self.assertEqual((c['url'], c['auth_type'], c['key']), ('http://mail-service:8000/mcp', 'bearer', 'k-mail'))
+        self.assertEqual(c['headers'], {'X-User-Email': '{{USER_EMAIL}}', 'X-Chat-Id': '{{CHAT_ID}}', 'X-Message-Id': '{{MESSAGE_ID}}'})
+        self.assertEqual(c['config']['function_name_filter_list'], 'create_draft,update_draft,get_draft,list_drafts,discard_draft')
+        self.assertNotIn('send', ','.join(BY_ID['mail']['tools']))
+        with self.assertRaisesRegex(m.ConfigError, 'MAIL_MCP_API_KEY'):
+            want('mail', {})
+
+    def test_servers_without_headers_send_none(self):
+        self.assertIsNone(want('doctranslator')['headers'])
 
     def test_admin_access_has_no_grants(self):
         c = want('employee_directory_write', {'EMPLOYEE_WRITE_MCP_API_KEY': 'k3'})

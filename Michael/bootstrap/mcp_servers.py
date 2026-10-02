@@ -207,7 +207,7 @@ def desired_connection(server, values, group_ids):
         'path': '' if server['type'] == 'mcp' else server.get('spec_path', 'openapi.json'),
         'auth_type': auth_type,
         'key': key,
-        'headers': None,
+        'headers': server.get('headers') or None,
         'config': {
             'enable': server['enabled'],
             'function_name_filter_list': ','.join(server.get('function_name_filter_list') or []),

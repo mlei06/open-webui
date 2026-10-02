@@ -89,6 +89,11 @@
           "items": { "type": "string", "minLength": 1 },
           "description": "Tool names the server must list; checked by the verify step."
         },
+        "headers": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Custom request headers sent on every call. Open WebUI fills {{USER_EMAIL}}, {{USER_ID}}, {{USER_NAME}}, {{CHAT_ID}} and {{MESSAGE_ID}} per call. Public-safe values only; secrets belong in env and auth."
+        },
         "function_name_filter_list": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 },
