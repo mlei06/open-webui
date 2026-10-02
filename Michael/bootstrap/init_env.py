@@ -16,6 +16,9 @@ The file is written with mode 600. What it manages:
   EMPLOYEE_DIRECTORY_SRC    the same for the employee-directory clone (--employee-src).
   MAIL_PROVIDER             smtp when SMTP_HOST is set (the owner's relay), otherwise mock.
   MAIL_SMTP_TLS_VERIFY      false when the provider is smtp (see the risk below), otherwise nothing.
+  WEBUI_SECRET_KEY          a generated random key (48 random bytes, urlsafe) that Open WebUI signs sessions with and
+                            derives the tool-key encryption from. Without it every container restart makes a new one:
+                            everyone is signed out and saved tool keys become unreadable. Never overwritten once set.
   MAIL_MCP_API_KEY          a generated random key (the one variable that both compose, for the
                             mail service, and mcp/mcp.json, for the Open WebUI registration, use).
 
@@ -47,6 +50,12 @@ TLS_COMMENT = (
     '# the owner chose to skip certificate checking for it. RISK: the connection stays encrypted (STARTTLS is required)\n'
     '# but anyone who can intercept it can pose as the relay and read the SMTP credentials and every message. Use it only\n'
     '# on a trusted network; prefer MAIL_SMTP_CA_FILE with the issuing authority certificate and then delete this line.\n'
+)
+
+
+SECRET_KEY_COMMENT = (
+    '# Added by init_env.py: the key Open WebUI signs sessions with and derives the tool-key encryption from. Keep it stable and\n'
+    '# private. If it changes, everyone is signed out (browsers need a one-time sign-out) and saved tool keys must be re-entered.\n'
 )
 
 
@@ -131,6 +140,8 @@ def plan(env, mail_src=None, employee_src=None):
     provider = (env.get('MAIL_PROVIDER') or (0, ''))[1].strip() or ('smtp' if smtp else 'mock')
     if provider == 'smtp' and not have('MAIL_SMTP_TLS_VERIFY'):
         wanted.append(('MAIL_SMTP_TLS_VERIFY', 'false', TLS_COMMENT))
+    if not have('WEBUI_SECRET_KEY'):
+        wanted.append(('WEBUI_SECRET_KEY', lambda: secrets.token_urlsafe(48), SECRET_KEY_COMMENT))
     if not have('MAIL_MCP_API_KEY'):
         wanted.append(('MAIL_MCP_API_KEY', lambda: secrets.token_urlsafe(32), None))
     return wanted, notes

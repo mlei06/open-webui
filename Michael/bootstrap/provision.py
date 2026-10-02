@@ -17,6 +17,7 @@ secrets never printed); this command only orders them, hands them one admin sess
 two things no single script owns: first-run admin creation and the final access audit.
 
   1. wait          the stack answers /health
+  1b. session key  NOTE when the running container has no WEBUI_SECRET_KEY (restarts would sign everyone out)
   2. admin         sign in with OPEN_WEBUI_ADMIN_EMAIL / OPEN_WEBUI_ADMIN_PASSWORD; on a fresh volume
                    (no account yet) create that account, which Open WebUI makes the admin
   2b. accounts     close self sign-up, default role user (accounts.py): only an admin creates accounts
@@ -48,11 +49,13 @@ masked again here for every secret value of the environment.
 """
 
 import argparse
+import json
 import os
 import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -171,9 +174,45 @@ def run_script(run, step, title, script, args, child_env, soft, check):
     return False
 
 
+def container_secret_key(base, run_cmd=subprocess.run):
+    """'set', 'missing' or None (cannot tell) for WEBUI_SECRET_KEY in the running Open WebUI container.
+
+    The container is the compose open-webui service publishing the port of `base`. Docker missing, no such
+    container or an unreadable answer is None: the check then says nothing rather than guessing. The value is
+    never kept; only whether it is non-empty.
+    """
+    port = urllib.parse.urlparse(base).port
+    if not port:
+        return None
+
+    def docker(*args):
+        try:
+            r = run_cmd(['docker', *args], capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return r.stdout if r.returncode == 0 else None
+
+    ids = (docker('ps', '-q', '--filter', f'publish={port}', '--filter', 'label=com.docker.compose.service=open-webui') or '').split()
+    if len(ids) != 1:
+        return None
+    try:
+        entries = json.loads(docker('inspect', '--format', '{{json .Config.Env}}', ids[0]) or '')
+    except ValueError:
+        return None
+    value = next((e.split('=', 1)[1] for e in entries if e.startswith('WEBUI_SECRET_KEY=')), '')
+    return 'set' if value.strip() else 'missing'
+
+
+SECRET_KEY_NOTE = (
+    'the running container has no WEBUI_SECRET_KEY, so every restart can generate a new one: that signs everyone out '
+    '(browsers stuck on the loading screen) and makes saved tool keys, such as the translator key, unreadable. Run '
+    'provision.py --init-env, then recreate the container (docker compose up -d); browsers need a one-time sign-out afterwards'
+)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description='Provision the whole stack against a running Open WebUI (idempotent).', formatter_class=argparse.RawDescriptionHelpFormatter, epilog='Restart recipe and the step list are in the module docstring (see the file header).')
-    ap.add_argument('--init-env', action='store_true', help='only add the missing non-secret or generated keys to .env, then stop (run before docker compose up)')
+    ap.add_argument('--init-env', action='store_true', help='only add the missing non-secret or generated keys (including WEBUI_SECRET_KEY) to .env, then stop (run before docker compose up)')
     ap.add_argument('--mail-src', help='with --init-env: the mail-service clone')
     ap.add_argument('--employee-src', help='with --init-env: the employee-directory clone')
     ap.add_argument('--check', action='store_true', help='change nothing; exit 1 if anything differs')
@@ -207,6 +246,15 @@ def main(argv=None):
         print('RESULT: FAIL')
         return 1
     run.ok('answers /health')
+
+    print('== Session key')
+    key_state = container_secret_key(base)
+    if key_state == 'set':
+        run.ok('the container has a WEBUI_SECRET_KEY (sessions and saved tool keys survive restarts)')
+    elif key_state == 'missing':
+        run.note('secret-key', SECRET_KEY_NOTE)
+    else:
+        print('  [SKIP] could not inspect the Open WebUI container (docker or the container is not reachable from here)')
 
     print('== Admin account')
     try:

@@ -5,6 +5,7 @@
 
 import contextlib
 import io
+import json
 import os
 import smtplib
 import ssl
@@ -72,7 +73,7 @@ class InitEnvTests(unittest.TestCase):
         self.assertNotIn('MAIL_SMTP_TLS_VERIFY', v)
 
     def test_never_overwrites_and_is_idempotent(self):
-        self.env.write_text(f'SMTP_HOST=h\nMAIL_PROVIDER=mock\nMAIL_MCP_API_KEY={SECRET}\nMAIL_SERVICE_SRC=/elsewhere\nMAIL_SMTP_TLS_VERIFY=true\nEMPLOYEE_DIRECTORY_SRC=/e\n')
+        self.env.write_text(f'SMTP_HOST=h\nMAIL_PROVIDER=mock\nWEBUI_SECRET_KEY={SECRET}\nMAIL_MCP_API_KEY={SECRET}\nMAIL_SERVICE_SRC=/elsewhere\nMAIL_SMTP_TLS_VERIFY=true\nEMPLOYEE_DIRECTORY_SRC=/e\n')
         before = self.env.read_text()
         code, out = self.run_init()
         self.assertEqual(code, 0)
@@ -90,6 +91,28 @@ class InitEnvTests(unittest.TestCase):
         text = self.env.read_text()
         self.assertEqual(text.count('MAIL_MCP_API_KEY='), 1)
         self.assertGreaterEqual(len(self.values()['MAIL_MCP_API_KEY']), 32)
+
+    def test_adds_a_long_random_secret_key_privately(self):
+        self.env.write_text('SMTP_HOST=h\n')
+        code, out = self.run_init()
+        key = self.values()['WEBUI_SECRET_KEY']
+        self.assertEqual(code, 0)
+        self.assertGreaterEqual(len(key), 64)  # 48 random bytes, urlsafe base64
+        self.assertRegex(key, r'^[A-Za-z0-9_-]+$')
+        self.assertNotIn(key, out)
+        self.assertIn('WEBUI_SECRET_KEY added', out)
+        self.assertEqual(stat.S_IMODE(os.stat(self.env).st_mode), 0o600)
+        self.run_init()
+        self.assertEqual(self.values()['WEBUI_SECRET_KEY'], key)  # a re-run keeps it
+
+    def test_an_empty_secret_key_is_filled_and_a_set_one_is_kept(self):
+        self.env.write_text('WEBUI_SECRET_KEY=\nSMTP_HOST=h\n')
+        self.run_init()
+        self.assertEqual(self.env.read_text().count('WEBUI_SECRET_KEY='), 1)
+        self.assertGreaterEqual(len(self.values()['WEBUI_SECRET_KEY']), 64)
+        self.env.write_text('WEBUI_SECRET_KEY=mine\nSMTP_HOST=h\n')
+        self.run_init()
+        self.assertEqual(self.values()['WEBUI_SECRET_KEY'], 'mine')
 
     def test_check_mode_changes_nothing(self):
         self.env.write_text('SMTP_HOST=h\n')
@@ -194,7 +217,47 @@ class SmtpCheckTests(unittest.TestCase):
         self.assertTrue(smtp_check.host_ca_file('/certs/ca-bundle.pem').endswith('runtime/certs/ca-bundle.pem'))
 
 
+class FakeDocker:
+    """Stands in for subprocess.run: one open-webui container publishing the port, with the given Config.Env."""
+
+    def __init__(self, env, containers='abc123\n'):
+        self.env, self.containers, self.calls = env, containers, []
+
+    def __call__(self, cmd, **kwargs):
+        self.calls.append(cmd)
+        out = self.containers if cmd[1] == 'ps' else json.dumps(self.env)
+        return mock.Mock(returncode=0, stdout=out)
+
+
 class ProvisionTests(unittest.TestCase):
+    def test_container_secret_key_states(self):
+        base = 'http://localhost:3999'
+        self.assertEqual(provision.container_secret_key(base, FakeDocker(['A=1', f'WEBUI_SECRET_KEY={SECRET}'])), 'set')
+        self.assertEqual(provision.container_secret_key(base, FakeDocker(['A=1'])), 'missing')
+        self.assertEqual(provision.container_secret_key(base, FakeDocker(['WEBUI_SECRET_KEY='])), 'missing')
+        fake = FakeDocker(['A=1'])
+        provision.container_secret_key(base, fake)
+        self.assertIn('publish=3999', fake.calls[0])
+
+    def test_container_secret_key_unknown_is_not_a_warning(self):
+        base = 'http://localhost:3999'
+        self.assertIsNone(provision.container_secret_key(base, FakeDocker([], containers='')))
+        self.assertIsNone(provision.container_secret_key(base, FakeDocker([], containers='a\nb\n')))
+        self.assertIsNone(provision.container_secret_key('http://example.test', FakeDocker([])))  # no port to look up
+
+        def no_docker(cmd, **kwargs):
+            raise FileNotFoundError('docker')
+        self.assertIsNone(provision.container_secret_key(base, no_docker))
+
+    def test_missing_key_note_explains_the_consequence_and_is_a_note(self):
+        run = provision.Run([])
+        with contextlib.redirect_stdout(io.StringIO()):
+            run.note('secret-key', provision.SECRET_KEY_NOTE)
+        self.assertEqual(run.failed, [])
+        self.assertIn('signs everyone out', provision.SECRET_KEY_NOTE)
+        self.assertIn('saved tool keys', provision.SECRET_KEY_NOTE)
+
+
     def test_secret_values_are_masked_in_output(self):
         env = {'SMTP_PASSWORD': SECRET, 'MAIL_MCP_API_KEY': 'k' * 20, 'OPEN_WEBUI_URL': 'http://x', 'XAI_API_KEY': 'abc'}
         run = provision.Run(provision.secret_values(env))
