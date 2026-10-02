@@ -194,12 +194,14 @@ Tests: `Michael/tests/test_user_context.py` (unit tests) and `Michael/tests/user
 
 ## 7. Community function: Theme Designer Pro
 
-A third-party function installed on the live instance. It is **not** part of the bootstrap and **not** tracked in git.
+A third-party function installed and applied on the live instance. The plugin file is **not** tracked in git, but it is now configured by `Michael/bootstrap/branding.py` (see below).
 
 - Local copy of the source: `Michael/tools/theme_designer_pro.py`. It is deliberately untracked and listed in the clone's local git ignore (`.git/info/exclude`), so it is never committed.
 - Header of the file: title "Theme Designer Pro", author `@G30`, version 1.8.1, MIT license, `required_open_webui_version: 0.11.0`. Its description says it is an instance-wide theme designer that replaces the built-in dark, light, OLED and her modes with custom themes for all users, registers an interactive UI at `/api/v1/theme-designer`, and persists themes server-side.
 - It defines an `Event` class (an event-type function, not a Filter, Pipe or Action).
 - **Security note**: it is a single third-party file of about 15,200 lines (about 900 KB). It runs with the same access as every function (section 3) and adds its own HTTP route. It has not been audited in this repository; this document does not claim anything about its behavior beyond its own header. Review before updating it, and do not install it on a new stack without that review.
+
+**How we configure it.** `Michael/bootstrap/branding.py` installs the plugin from the local copy if it is missing, enables it, hardens its valves (Canvas FX off, Canvas API access off, community-theme catalogue off, URL import off), builds the theme from `Michael/branding/tokens.json` and `Michael/branding/theme.css`, uploads it to the plugin's `/api/v1/theme-designer` route, and verifies what users are served. Brand assets (logo, font) live in the gitignored `Michael/runtime/brand/` and are never committed. The theme upload needs an admin session (`OPEN_WEBUI_ADMIN_EMAIL` and `OPEN_WEBUI_ADMIN_PASSWORD`), not an API key. Run `python3 Michael/bootstrap/branding.py` to apply, `--check` to verify only. Do not press Save in the plugin's own designer: it replaces the theme with the designer's state; re-run the script to restore it. Details are in `Michael/README.md`. The theme is applied on the live instance.
 
 If you need to disable it, use the enable toggle in Admin Panel > Functions (see section 5).
 
@@ -209,7 +211,7 @@ If you need to disable it, use the enable toggle in Admin Panel > Functions (see
 
 - The API routes and request shapes in section 4.2: `backend/open_webui/routers/functions.py`, `backend/open_webui/models/functions.py`.
 - Everything in section 6: `Michael/functions/user_context.py`, `Michael/models/user-context.json`, `Michael/bootstrap/user_context.py`, `Michael/README.md`, tests under `Michael/tests/`.
-- Section 7: header, class name and size of `Michael/tools/theme_designer_pro.py` and its local-ignore entry. Behavior beyond the header was not examined.
+- Section 7: header, class name and size of `Michael/tools/theme_designer_pro.py`, its local-ignore entry, and the behavior of `Michael/bootstrap/branding.py` (read, not run). The plugin's own behavior beyond its header was not examined.
 - Credentials: `Michael/bootstrap/davy_connection.py` (`get_token`) and `Michael/.env.example`.
 
 **Taken from the official documentation** (<https://docs.openwebui.com/features/extensibility/plugin/> and the pages under it), not re-tested here:
