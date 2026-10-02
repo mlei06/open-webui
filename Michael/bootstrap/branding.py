@@ -21,6 +21,7 @@ button does, without the designer:
                                                        copy the font (--font PATH)
   python3 Michael/bootstrap/branding.py --check         verify only, change nothing
   python3 Michael/bootstrap/branding.py --verify-render headless-browser render check
+  python3 Michael/bootstrap/branding.py --verify-contrast WCAG AA contrast audit of every screen
   python3 Michael/bootstrap/branding.py --rollback      switch the theme plugin off
 
 The plugin accepts an admin JWT only, not an API key, so the theme upload needs
@@ -47,6 +48,7 @@ TOOL_FILE = MICHAEL_DIR / 'tools' / 'theme_designer_pro.py'
 FUNCTION_ID = 'theme_designer_pro'
 ROUTE = '/api/v1/theme-designer'
 FONT_FILE = 'archivo-latin.woff2'
+PALETTE_STEPS = (400, 500, 600, 700)
 LOGO_FILES = ('lenovo-logo.svg', 'lenovo-logo.png')
 
 # Valves that close the plugin's remote and script surface. Everything else is
@@ -116,16 +118,25 @@ def contrast_report(tokens):
         grounds['sidebar'] = sidebar
         grounds['panel'] = parse_color(t['panel'])
         grounds['raised panel'] = parse_color(t['panelRaised'])
+        # Every text-grade ramp step: Open WebUI reads gray-300..600 as text (inactive tabs,
+        # meta lines, hints), so each must hold 4.5:1 on every ground it can land on.
         if mode == 'dark':
             texts = {'text': t['text'], 'gray-100': t['ramp']['100'], 'gray-400': t['ramp']['400'], 'gray-500': t['ramp']['500']}
         else:
-            texts = {'text': t['text'], 'gray-800': t['ramp']['800'], 'gray-600': t['ramp']['600'], 'gray-500': t['ramp']['500']}
+            texts = {'text': t['text'], 'gray-800': t['ramp']['800'], **{f'gray-{k}': t['ramp'][k] for k in ('600', '500', '400', '300')}}
         worst = (99.0, '')
         for tname, tcol in texts.items():
             for gname, g in grounds.items():
                 r = ratio(parse_color(tcol), g)
                 if r < worst[0]:
                     worst = (r, f'{tname} on {gname}')
+        # Dark gray-600 is the pale-on-dark hint colour; the bright corners of the dark
+        # gradient sit under the sidebar, so it is checked on the sidebar and the panels.
+        if mode == 'dark':
+            for gname in ('sidebar', 'panel', 'raised panel', 'gradient #2E164B', 'gradient #11174E'):
+                r = ratio(parse_color(t['ramp']['600']), grounds[gname])
+                if r < worst[0]:
+                    worst = (r, f'gray-600 on {gname}')
         yield worst[0] >= 4.5, f'{mode}: body and secondary text, lowest {worst[0]:.1f}:1 ({worst[1]}), needs 4.5:1'
         for name, fg, bg in (
             ('action label', t['onAction'], t['action']),
@@ -133,6 +144,10 @@ def contrast_report(tokens):
         ):
             r = ratio(parse_color(fg), parse_color(bg) if isinstance(bg, str) else bg)
             yield r >= 4.5, f'{mode}: {name} {r:.1f}:1, needs 4.5:1'
+        # A form control's edge: 3:1 against the panel it sits on and the ground.
+        for gname in ('panel', 'raised panel', 'sidebar'):
+            r = ratio(parse_color(t['edge']), grounds[gname])
+            yield r >= 3.0, f'{mode}: form-control edge on {gname} {r:.1f}:1, needs 3:1'
         # The action fill is a non-text control: 3:1 against what it sits on.
         r = ratio(parse_color(t['action']), sidebar if mode == 'dark' else grounds['panel'])
         yield r >= 3.0, f'{mode}: action fill against its surface {r:.1f}:1, needs 3:1'
@@ -167,6 +182,11 @@ def mode_block(selector, t, tokens):
     lines = [f'{selector} {{']
     for step, col in t['ramp'].items():
         lines.append(f'  --color-gray-{step}: {col} !important;')
+    # Hue palette: one text-safe value for the 400-700 steps of each hue the app uses
+    # for text (the Tailwind defaults are tuned for white, not for the pink ground).
+    for hue, col in t.get('palette', {}).items():
+        for step in PALETTE_STEPS:
+            lines.append(f'  --color-{hue}-{step}: {col} !important;')
     veil = f'linear-gradient({t["veil"]}, {t["veil"]})'
     props = {
         'bg': f'{veil}, {gradient_css(t["gradient"])}',
@@ -175,6 +195,10 @@ def mode_block(selector, t, tokens):
         'panel': t['panel'],
         'panel-raised': t['panelRaised'],
         'rule': t['rule'],
+        'edge': t['edge'],
+        'error': t['error'],
+        'warning': t['warning'],
+        'success': t['success'],
         'text': t['text'],
         'link': t['link'],
         'action': t['action'],
@@ -376,7 +400,19 @@ def verify_render(env, base):
     import subprocess
 
     script = MICHAEL_DIR / 'tests' / 'verify_render.mjs'
-    e = {**os.environ, 'BASE': base, 'ENVF': str(MICHAEL_DIR / '.env')}
+    e = {**os.environ, 'BASE': base, 'ENVF': os.environ.get('MICHAEL_ENV_FILE') or str(MICHAEL_DIR / '.env')}
+    return subprocess.call(['node', str(script)], env=e)
+
+
+def verify_contrast(env, base, modes, seeded):
+    """Run tests/verify_contrast.mjs: real contrast ratios, light and dark, every screen."""
+    import os
+    import subprocess
+
+    script = MICHAEL_DIR / 'tests' / 'verify_contrast.mjs'
+    e = {**os.environ, 'BASE': base, 'ENVF': os.environ.get('MICHAEL_ENV_FILE') or str(MICHAEL_DIR / '.env'), 'MODES': modes}
+    if not seeded:
+        e['SEEDED'] = '0'
     return subprocess.call(['node', str(script)], env=e)
 
 
@@ -386,6 +422,9 @@ def main():
     ap.add_argument('--font', help='with --init-assets: path to archivo-latin.woff2')
     ap.add_argument('--check', action='store_true', help='verify only; change nothing')
     ap.add_argument('--verify-render', action='store_true', help='headless-browser check that the login form and the app render (see tests/verify_render.mjs)')
+    ap.add_argument('--verify-contrast', action='store_true', help='WCAG AA contrast audit in a headless browser (see tests/verify_contrast.mjs); fails below 4.5:1 text, 3:1 icons')
+    ap.add_argument('--modes', default='light,dark', help='with --verify-contrast: modes to audit (default light,dark)')
+    ap.add_argument('--unseeded', action='store_true', help='with --verify-contrast: skip the steps that need the seeded chats (live stack)')
     ap.add_argument('--rollback', action='store_true', help='switch the theme plugin off through the admin API (one-step recovery from a stuck UI)')
     args = ap.parse_args()
 
@@ -398,6 +437,8 @@ def main():
         return rollback(env, base)
     if args.verify_render:
         return verify_render(env, base)
+    if args.verify_contrast:
+        return verify_contrast(env, base, args.modes, not args.unseeded)
     ok = True
 
     def report(passed, msg):

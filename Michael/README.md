@@ -222,6 +222,20 @@ python3 Michael/bootstrap/branding.py --verify-render   # login page and signed-
 
 `--verify-render` (`tests/verify_render.mjs`) fails unless the login form (logged out) or the chat input (signed in) becomes visible and the splash is removed, within `TIMEOUT_MS` (20 s; it also fails if rendering takes more than half of that). Set `SHOTS=dir` to save screenshots. Run it against a throwaway stack after every theme change, **before** applying to the live stack, and again after.
 
+### Check contrast (WCAG AA), light and dark
+
+```bash
+python3 Michael/bootstrap/branding.py --verify-contrast                  # light and dark
+python3 Michael/bootstrap/branding.py --verify-contrast --modes light    # one mode
+python3 Michael/bootstrap/branding.py --verify-contrast --unseeded       # live stack: skip the steps that need the seeded chats
+```
+
+`--verify-contrast` (`tests/verify_contrast.mjs`, same Node + playwright-core + Chromium setup as `--verify-render`) drives a real headless browser through the sign-in page, the loading splash, an empty chat, a markdown conversation (headings, links, tables, blockquotes, inline code, code blocks), the message action icons and their tooltips, toasts, the model selector, the input menus, the sidebar in hover, selected and menu states, the search modal, the user menu, the settings modal and every tab, every admin and workspace page, the create forms, and a phone-width layout. For every visible text node, input value, placeholder, editor placeholder, icon (`svg`) and form-control border it measures the real contrast ratio against what is painted behind it: the page is screenshotted with all text transparent and every `svg` hidden, and the pixels under each item are sampled, so the gradient, translucent panels and backdrop blur are measured as drawn, not guessed from CSS. It fails (exit 1) when any item is under 4.5:1 (text, placeholders), 3:1 (large text, icons, form-control edges, disabled controls). It prints each failing element with its selector, text, ratio, colours, screen and state; set `REPORT=file.json` to save every failure, `SHOTS=dir` for screenshots, `ONLY=regex` to audit matching screens only, `DUMP=1` to list every measurement.
+
+Needs fixtures to reach every screen: against a **throwaway** stack (own compose project name, port and volume), sign up an admin, point `MICHAEL_ENV_FILE` at a file with that admin's `OPEN_WEBUI_URL`, `OPEN_WEBUI_ADMIN_EMAIL` and `OPEN_WEBUI_ADMIN_PASSWORD`, and run `tests/seed_contrast_fixtures.py` (synthetic user, chats, folder, model, prompt, knowledge base, tool, note; it refuses port 3000). Against the live stack use `--unseeded`: it signs in read-only with the admin credentials from `.env`, creates nothing, and audits the screens that exist (steps that need a seeded chat are listed as skipped).
+
+How the theme keeps AA: the light ramp's `gray-300` to `gray-600` are all text-grade (Open WebUI paints inactive tabs, meta lines, hints and the faint sidebar icons with `gray-300` and `gray-400`), the hue palette (`red`, `green`, ...) is darkened for the light ground, form controls get an edge (`--lnv-edge`) at 3:1, and `theme.css` has a short "Legibility" block for what a ramp cannot reach (text dimmed by `opacity-NN`, disabled controls, the phone sidebar over its scrim, code syntax colours, toast text). `branding.py` itself also checks the token pairs statically on every run, and `python3 Michael/tests/test_branding_contrast.py` repeats those checks (plus ramp order and the loader-safety limits) without a browser. Run `--verify-contrast` against a throwaway stack after every change to `tokens.json` or `theme.css`, before applying to the live stack.
+
 If the UI is stuck on the splash, switch the theme off in one step (needs the admin credentials in `.env`), then hard-reload the browser (Ctrl+Shift+R):
 
 ```bash
