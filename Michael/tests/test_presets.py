@@ -30,7 +30,7 @@ def load(doc, prompts=None):
         (tmp / 'presets.json').write_text(json.dumps(doc))
         for d in doc['presets']:
             (tmp / d['prompt']).write_text(prompts if prompts is not None else 'prompt')
-        return p.load_presets(tmp / 'presets.json', tmp)
+        return p.load_presets(tmp / 'presets.json', tmp, icon_dir=p.ICON_DIR)
 
 
 class DeclarationTests(unittest.TestCase):
@@ -228,7 +228,7 @@ class ValidationTests(unittest.TestCase):
 class MatchTests(unittest.TestCase):
     def live(self, pid='lenny'):
         w = want(pid)
-        return json.loads(json.dumps({**w, 'meta': {**w['meta'], 'profile_image_url': 'x'}, 'params': {**w['params'], 'top_k': 5}}))
+        return json.loads(json.dumps({**w, 'meta': {**w['meta'], 'description_extra': 'x'}, 'params': {**w['params'], 'top_k': 5}}))
 
     def test_equal_model_matches_and_extra_keys_are_ignored(self):
         self.assertTrue(p.matches(self.live(), want('lenny')))
@@ -242,6 +242,9 @@ class MatchTests(unittest.TestCase):
             lambda m: m['meta'].update(defaultFeatureIds=[]),
             lambda m: m['meta']['capabilities'].update(web_search=False),
             lambda m: m['params'].update(system='changed'),
+            lambda m: m['meta'].pop('preset_icon'),
+            lambda m: m['meta'].update(profile_image_url='data:image/png;base64,AAAA'),
+            lambda m: m['meta']['preset_icon'].update(source='old-renderer'),
         ):
             m = self.live()
             mutate(m)
@@ -254,6 +257,64 @@ class MatchTests(unittest.TestCase):
         got = p.missing_refs(PRESETS, FILTERS, {'mail'}, set(), set())
         self.assertTrue(any(k == 'filter function' for _, k, _, _ in got))
         self.assertTrue(any(k == 'workspace tool' and not o for _, k, _, o in got))
+
+
+class IconTests(unittest.TestCase):
+    def test_every_preset_declares_its_own_icon(self):
+        files = [x['icon'] for x in PRESETS]
+        self.assertEqual(files, [f'{x["id"]}.svg' for x in PRESETS])
+        uris = {want(x['id'])['meta']['profile_image_url'] for x in PRESETS}
+        self.assertEqual(len(uris), len(PRESETS), 'six distinct images')
+
+    def test_image_is_a_png_data_uri_with_a_fingerprint(self):
+        meta = want('lenny')['meta']
+        self.assertTrue(meta['profile_image_url'].startswith('data:image/png;base64,'))
+        self.assertEqual(set(meta['preset_icon']), {'source', 'image'})
+        self.assertEqual(meta['preset_icon']['image'], p.sha256(meta['profile_image_url']))
+
+    def live_without_image(self, pid='lenny'):
+        m = json.loads(json.dumps(want(pid)))
+        for k in ('profile_image_url', 'preset_icon'):
+            m['meta'].pop(k)
+        return m
+
+    def test_missing_image_is_drift_and_is_written_by_create_and_update(self):
+        self.assertFalse(p.matches(self.live_without_image(), want('lenny')))
+        calls = []
+        orig = p.get_model, p.call
+        try:
+            p.get_model = lambda base, token, mid: self.live_without_image()
+            p.call = lambda base, method, path, token=None, body=None: calls.append((path, body))
+            self.assertEqual(p.upsert('b', 't', want('lenny'), apply=False), 'updated')
+            self.assertEqual(calls, [])
+            self.assertEqual(p.upsert('b', 't', want('lenny'), apply=True), 'updated')
+            self.assertEqual(calls[0][1]['meta']['profile_image_url'], want('lenny')['meta']['profile_image_url'])
+            self.assertEqual(calls[0][1]['meta']['preset_icon'], want('lenny')['meta']['preset_icon'])
+            calls.clear()
+            p.get_model = lambda base, token, mid: json.loads(json.dumps(want('lenny')))
+            self.assertEqual(p.upsert('b', 't', want('lenny'), apply=True), 'unchanged')
+            self.assertEqual(calls, [], 're-run changes nothing')
+        finally:
+            p.get_model, p.call = orig
+
+    def test_preset_without_icon_keeps_the_default_and_is_not_a_failure(self):
+        doc = json.loads(p.PRESETS_JSON.read_text())
+        del doc['presets'][0]['icon']
+        _, presets = load(doc)
+        self.assertIsNone(presets[0]['icon_svg'])
+        m = p.desired_model(presets[0], 'base-x', FILTERS)
+        self.assertNotIn('profile_image_url', m['meta'])
+        self.assertNotIn('preset_icon', m['meta'])
+        live = json.loads(json.dumps(m))
+        live['meta']['profile_image_url'] = 'data:image/png;base64,AAAA'  # whatever the owner set in the app stays
+        self.assertTrue(p.matches(live, m))
+
+    def test_bad_icon_declarations_are_rejected(self):
+        for icon in ('missing.svg', '../lenny.svg', 'lenny.png', '', 7):
+            doc = json.loads(p.PRESETS_JSON.read_text())
+            doc['presets'][0]['icon'] = icon
+            with self.assertRaises(p.ConfigError, msg=repr(icon)):
+                load(doc)
 
 
 class WebSearchTests(unittest.TestCase):

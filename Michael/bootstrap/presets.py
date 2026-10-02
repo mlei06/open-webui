@@ -22,7 +22,11 @@ already filled out. Through the authenticated admin API this script:
      presets.json (a top-level default for every preset, overridable per preset) and turns on
      the built-in knowledge tool so models can search them. Knowledge a user attached in the
      app is kept; a base that is not created yet (knowledge_bases.py) is a NOTE;
-  7. checks that the tool servers and tools the presets name are registered. An
+  7. sets each preset's profile image from its "icon" (an SVG of branding/icons/, rasterised to PNG by
+     icons.py because Open WebUI refuses SVG profile images). A preset with no "icon" keeps Open WebUI's
+     default image and prints a NOTE; an image a user changed in the app is put back, like any other
+     declared setting. --check reports icon drift;
+  8. checks that the tool servers and tools the presets name are registered. An
      unregistered one (for example the mail server before mail-service is up) is a NOTE,
      not a failure: registration belongs to mcp_servers.py and translator_tool.py, and
      the preset works as soon as the connection exists.
@@ -36,10 +40,13 @@ printed: only ids, counts and fixed status text are written.
 """
 
 import argparse
+import functools
+import hashlib
 import json
 import sys
 import time
 
+import icons
 from davy_connection import MICHAEL_DIR, ApiError, base_model_of, call, get_token, load_env
 from knowledge_bases import ConfigError as ManifestError
 from knowledge_bases import find_knowledge_base, list_knowledge_bases, load_manifest
@@ -47,6 +54,7 @@ from knowledge_bases import find_knowledge_base, list_knowledge_bases, load_mani
 PRESETS_JSON = MICHAEL_DIR / 'models' / 'presets.json'
 PROMPT_DIR = MICHAEL_DIR / 'prompts'
 FUNCTION_DIR = MICHAEL_DIR / 'functions'
+ICON_DIR = icons.ICON_DIR
 SEARCH_ENGINE = 'perplexity_search'
 SEARCH_KEY_ENV = 'PERPLEXITY_API_KEY'
 PUBLIC_READ = [{'principal_type': 'user', 'principal_id': '*', 'permission': 'read'}]
@@ -70,7 +78,32 @@ def tool_id(ref):
     return f'server:mcp:{ref["server"]}' if 'server' in ref else ref['tool']
 
 
-def load_presets(path=PRESETS_JSON, prompt_dir=PROMPT_DIR, function_dir=FUNCTION_DIR):
+@functools.lru_cache(maxsize=None)
+def render_icon(svg_text):
+    """The PNG data URI of an SVG icon (cached: the render is deterministic per source). Raises icons.IconError."""
+    return icons.render_data_uri(svg_text)
+
+
+def sha256(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def load_icon(name, icon_dir):
+    """(svg text, error) for a preset's "icon" file name; the error is None when it reads and renders."""
+    if not (isinstance(name, str) and name.endswith('.svg') and '/' not in name and '\\' not in name and not name.startswith('.')):
+        return None, 'icon must be the file name of an .svg in branding/icons/'
+    try:
+        text = (icon_dir / name).read_text()
+    except OSError:
+        return None, f'cannot read icon file {name}'
+    try:
+        render_icon(text)
+    except icons.IconError as e:
+        return None, f'icon {name}: {e}'
+    return text, None
+
+
+def load_presets(path=PRESETS_JSON, prompt_dir=PROMPT_DIR, function_dir=FUNCTION_DIR, icon_dir=ICON_DIR):
     """Parse and validate the declaration; returns (doc, presets with their prompt text). Raises ConfigError."""
     try:
         doc = json.loads(path.read_text())
@@ -136,6 +169,11 @@ def load_presets(path=PRESETS_JSON, prompt_dir=PROMPT_DIR, function_dir=FUNCTION
             errors.append(f'{where}: actions must be a list of ids declared under the top-level "actions"')
         if not isinstance(p.get('params'), dict):
             errors.append(f'{where}: params must be an object')
+        icon_svg = None
+        if p.get('icon') is not None:
+            icon_svg, problem = load_icon(p['icon'], icon_dir)
+            if problem:
+                errors.append(f'{where}: {problem}')
         kbs = p.get('knowledge_bases', default_kbs)
         if not (isinstance(kbs, list) and all(k in kb_names for k in kbs)):
             errors.append(f'{where}: knowledge_bases must be a list of ids from knowledge/manifest.json ({", ".join(kb_names)})')
@@ -151,7 +189,7 @@ def load_presets(path=PRESETS_JSON, prompt_dir=PROMPT_DIR, function_dir=FUNCTION
             continue
         if not text:
             errors.append(f'{where}: prompt file is empty')
-        out.append({**p, 'system': text, 'knowledge_bases': [kb_names[k] for k in kbs]})
+        out.append({**p, 'system': text, 'icon_svg': icon_svg, 'knowledge_bases': [kb_names[k] for k in kbs]})
     if errors:
         raise ConfigError(f'{path.name}: ' + '; '.join(errors))
     return doc, out
@@ -166,11 +204,34 @@ def knowledge_refs(preset, kbs):
     ]
 
 
+def icon_meta(svg_text):
+    """meta keys of a preset's icon: the PNG data URI and its fingerprint ({} when the preset has no icon).
+
+    preset_icon.source identifies the SVG and renderer the image came from; preset_icon.image is the hash of
+    the data URI written, so an image replaced in the app is noticed. The PNG bytes are never compared with a
+    fresh render, which a different zlib could encode differently.
+    """
+    if not svg_text:
+        return {}
+    uri = render_icon(svg_text)
+    return {'profile_image_url': uri, 'preset_icon': {'source': icons.fingerprint(svg_text), 'image': sha256(uri)}}
+
+
+def icon_ok(meta, want_meta):
+    """True when the live image is the declared icon (or no icon is declared)."""
+    wanted = want_meta.get('preset_icon')
+    if not wanted:
+        return True
+    have = meta.get('preset_icon') or {}
+    return have.get('source') == wanted['source'] and have.get('image') == sha256(meta.get('profile_image_url') or '')
+
+
 def desired_model(preset, base_model, filter_ids, kbs=None):
     """The model form Open WebUI should hold for a preset. kbs maps knowledge base names to live records."""
     knowledge = knowledge_refs(preset, kbs or {})
     # Native function calling reaches attached knowledge only through the built-in knowledge tool.
     builtin = set(preset['builtin_tools']) | ({'knowledge'} if preset['knowledge_bases'] else set())
+    icon = icon_meta(preset.get('icon_svg'))
     return {
         'id': preset['id'],
         'base_model_id': base_model,
@@ -186,6 +247,7 @@ def desired_model(preset, base_model, filter_ids, kbs=None):
             'filterIds': list(filter_ids),
             'defaultFeatureIds': list(preset['default_features']),
             **({'knowledge': knowledge} if knowledge else {}),
+            **icon,
         },
         'params': {'function_calling': 'native', 'system': preset['system'], **preset['params']},
     }
@@ -214,6 +276,7 @@ def matches(current, want):
     meta, params = current.get('meta') or {}, current.get('params') or {}
     return (
         knowledge_ok(meta.get('knowledge'), want['meta'].get('knowledge') or [])
+        and icon_ok(meta, want['meta'])
         and current.get('base_model_id') == want['base_model_id']
         and current.get('name') == want['name']
         and current.get('is_active') is True
@@ -448,6 +511,8 @@ def run(argv=None):
                 report(False, f'{p["id"]}: preset would be {what} (run without --check)')
             else:
                 report(True, f'{p["id"]}: preset {what}')
+            if not p.get('icon_svg'):
+                print(f'[NOTE] {p["id"]}: no "icon" declared in presets.json: it keeps the default Open WebUI image')
 
         for pid, kind, ref, optional in missing_refs(presets, doc['filter_ids'], *registered_ids(base, token)):
             if kind == 'filter function':

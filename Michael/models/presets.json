@@ -15,6 +15,7 @@
     {
       "id": "lenny",
       "name": "Lenny",
+      "icon": "lenny.svg",
       "description": "All-in-one assistant: web search, document translation, employee directory, mail drafting, Lenovo-styled PowerPoint and Word files, and knowledge bases.",
       "prompt": "lenny.md",
       "tools": [
@@ -47,6 +48,7 @@
     {
       "id": "document-translator",
       "name": "Document Translator",
+      "icon": "document-translator.svg",
       "description": "Translates attached documents and returns the translated file. Nothing else.",
       "prompt": "document-translator.md",
       "tools": [
@@ -73,6 +75,7 @@
     {
       "id": "web-searcher",
       "name": "Web Searcher",
+      "icon": "web-searcher.svg",
       "description": "Searches the web and answers with cited sources. No other tools.",
       "prompt": "web-searcher.md",
       "tools": [],
@@ -96,6 +99,7 @@
     {
       "id": "office-agent",
       "name": "Office Agent",
+      "icon": "office-agent.svg",
       "description": "Finds colleagues in the employee directory and drafts email for you to review and send.",
       "prompt": "office-agent.md",
       "tools": [
@@ -123,6 +127,7 @@
     {
       "id": "knowledge-base-manager",
       "name": "Knowledge Base Manager",
+      "icon": "knowledge-base-manager.svg",
       "description": "Creates, updates and organises your knowledge bases from files you attach (for example a new SOP). Asks before deleting or overwriting.",
       "prompt": "knowledge-base-manager.md",
       "tools": [
@@ -148,6 +153,7 @@
     {
       "id": "office-documents",
       "name": "Office Documents",
+      "icon": "office-documents.svg",
       "description": "Produces Lenovo-styled PowerPoint decks and Word documents and returns the file to download.",
       "prompt": "office-documents.md",
       "tools": [

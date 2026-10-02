@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Document Translator: documents and languages</title>
+  <circle cx="32" cy="32" r="32" fill="#1E3A8A"/>
+  <circle cx="32" cy="32" r="30" fill="none" stroke="#93C5FD" stroke-width="1.5"/>
+  <g fill="none" stroke="#FFFFFF" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="14" y="13" width="22" height="28" rx="3.5"/>
+    <path d="M19 21 H31 M19 27 H28"/>
+    <path d="M39 18 H50 M46 14 L50 18 L46 22" stroke="#E1251B"/>
+    <rect x="27" y="26" width="23" height="26" rx="3.5" fill="#1E3A8A"/>
+    <path d="M32 46 L38.5 32 L45 46 M34.5 41 H42.5"/>
+  </g>
+</svg>
