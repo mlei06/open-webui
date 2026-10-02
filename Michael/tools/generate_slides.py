@@ -30,6 +30,10 @@ license: MIT
 #   * the Lenovo logo (valve brand_logo_png_b64, set by bootstrap/office_tools.py
 #     from runtime/brand) replaces the cover icon and sits in every footer.
 #   * frontmatter requirements emptied: python-pptx and pillow are in the image.
+#   * remote image fetches (_fetch_url) go through _guarded_get: public addresses only,
+#     redirects re-checked, size-capped (request-forgery protection, see the block above it).
+#   * chart, KPI and funnel/cycle/pyramid colours use the "data" colours of the lenovo
+#     palette (blue and neutral from tokens.json); red stays the accent for small marks.
 # ============================================================================
 
 import inspect
@@ -76,6 +80,85 @@ try:
     _HAS_HTTPX = True
 except Exception:
     _HAS_HTTPX = False
+
+# --- Remote image guard (Michael edit; request-forgery protection) -----------
+# The model (or text injected into its prompt) can put an image URL in a spec. This tool runs
+# inside the Open WebUI container, so an unchecked fetch could reach internal services. Every
+# fetch of a URL the model supplied goes through _guarded_get: http(s) only, the host must resolve
+# to PUBLIC addresses only (private, loopback, link-local, CGNAT, multicast, reserved are refused),
+# the connection is made to the address that was checked (no second DNS lookup, so no rebinding),
+# every redirect is checked again, and the body is size-capped. Data URIs never reach the network.
+_MAX_IMAGE_BYTES = 15 * 1024 * 1024
+_MAX_REDIRECTS = 4
+
+
+def _public_ips(host: str) -> list:
+    """Addresses `host` resolves to, or [] when it does not resolve or ANY address is not public."""
+    import ipaddress
+    import socket
+
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return []
+    out = []
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        except ValueError:
+            return []
+        mapped = getattr(ip, "ipv4_mapped", None)
+        if mapped is not None:
+            ip = mapped
+        if not ip.is_global or ip.is_multicast:
+            return []
+        out.append(str(ip))
+    return out
+
+
+async def _guarded_get(url: str, *, timeout: float = 15, transport=None):
+    """GET a public http(s) URL. Returns (body bytes, content-type) or None when refused or failed.
+
+    `transport` is for tests only (an httpx transport replacing the network).
+    """
+    import asyncio
+    from urllib.parse import urljoin, urlsplit
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, transport=transport) as client:
+            for _ in range(_MAX_REDIRECTS + 1):
+                parts = urlsplit(url)
+                host = parts.hostname
+                if parts.scheme not in ("http", "https") or not host:
+                    return None
+                ips = await asyncio.get_running_loop().run_in_executor(None, _public_ips, host)
+                if not ips:
+                    return None
+                ip = f"[{ips[0]}]" if ":" in ips[0] else ips[0]
+                port = f":{parts.port}" if parts.port else ""
+                target = parts._replace(netloc=ip + port).geturl()
+                host_header = (f"[{host}]" if ":" in host else host) + port
+                ext = {"sni_hostname": host} if parts.scheme == "https" else {}
+                async with client.stream("GET", target, headers={"Host": host_header}, extensions=ext) as r:
+                    if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
+                        url = urljoin(url, r.headers["location"])
+                        continue
+                    if r.status_code != 200:
+                        return None
+                    declared = r.headers.get("content-length")
+                    if declared and declared.isdigit() and int(declared) > _MAX_IMAGE_BYTES:
+                        return None
+                    body, size = [], 0
+                    async for chunk in r.aiter_bytes():
+                        size += len(chunk)
+                        if size > _MAX_IMAGE_BYTES:
+                            return None
+                        body.append(chunk)
+                    return b"".join(body), (r.headers.get("content-type") or "").lower()
+            return None
+    except Exception:
+        return None
+
 
 # --- OpenWebUI Files API (native download chip) -----------------------------
 try:
@@ -205,8 +288,15 @@ _PALETTES: dict[str, dict[str, str]] = {
     # (small marks, numbers, bullets); surfaces are the dark neutral ramp (900 / 950).
     # "faint" is ramp 400 (5.2:1 on white); "accent_on_dark" is red lightened to keep
     # 4.5:1 for small text on the dark surfaces.
+    # "data" / "series" colour the DATA (chart series, KPI numbers, funnel/pyramid/cycle steps): the
+    # blue accent ramp and the neutral ramp of tokens.json (accent.base / bright / deep, ramp 600-700),
+    # so red stays the single accent for small marks and the logo. Palettes without them keep the old
+    # behaviour (data colour = accent).
     "lenovo":     {"primary": "2D2130", "dark": "191019", "accent": "E1251B", "light_accent": "A79BAB",
-                   "faint": "74697A", "accent_on_dark": "F0665E"},
+                   "faint": "74697A", "accent_on_dark": "F0665E",
+                   "data": "1E40AF",
+                   "series": ["1E40AF", "74697A", "3B82F6", "5B4E61", "1E3A8A", "A79BAB"],
+                   "series_circular": ["1E40AF", "5B4E61", "3B82F6", "1E3A8A", "74697A", "3A2A3C"]},
     "midnight":   {"primary": "1E2761", "dark": "141A45", "accent": "C99A3B", "light_accent": "CADCFC"},
     "forest":     {"primary": "2C5F2D", "dark": "1A3D1B", "accent": "97BC62", "light_accent": "B7D48A"},
     "coral":      {"primary": "2F3C7E", "dark": "1E2A5C", "accent": "F96167", "light_accent": "F9E795"},
@@ -263,6 +353,9 @@ def _resolve_theme(spec: dict, slides: list) -> dict:
             base[k] = _hex(pal[k])
     if spec.get("accent"):
         base["accent"] = _hex(spec["accent"])
+        base["data"] = base["accent"]  # an accent the user asked for colours the data too
+        base.pop("series", None)
+        base.pop("series_circular", None)
     if spec.get("primary"):
         base["primary"] = _hex(spec["primary"])
 
@@ -291,6 +384,9 @@ def _resolve_theme(spec: dict, slides: list) -> dict:
         "accent_soft": _lighten(accent, 0.82),
         "light_accent": _hex(base.get("light_accent") or _lighten(accent, 0.5)),
         "accent_on_dark": _hex(base["accent_on_dark"]) if base.get("accent_on_dark") else accent,
+        "data": _hex(base["data"]) if base.get("data") else accent,
+        "series": [_hex(c) for c in base["series"]] if base.get("series") else None,
+        "series_circular": [_hex(c) for c in base["series_circular"]] if base.get("series_circular") else None,
         # cards
         "card_bg": "FFFFFF",
         "card_border": _lighten(primary, 0.86),
@@ -993,14 +1089,8 @@ def _decode_data_image(val: str) -> Optional[bytes]:
 async def _fetch_url(url: str) -> Optional[bytes]:
     if not (_HAS_HTTPX and isinstance(url, str) and url.startswith("http")):
         return None
-    try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=25) as c:
-            r = await c.get(url)
-            if r.status_code == 200 and r.content:
-                return r.content
-    except Exception:
-        return None
-    return None
+    res = await _guarded_get(url, timeout=25)
+    return res[0] if res else None
 
 
 async def _unsplash(query: str, key: str) -> Optional[bytes]:
@@ -1428,7 +1518,7 @@ def _r_kpi(deck, slide_dict, page):
         vsize = 40 if len(vstr) <= 5 else (33 if len(vstr) <= 7 else 26)
         tbv, tfv = _textbox(slide, x + pad, y + 0.45, cw - 2 * pad, 1.0,
                             anchor="middle", wrap=False)
-        _add_para(tfv, vstr, first=True, size=vsize, color=t["accent"],
+        _add_para(tfv, vstr, first=True, size=vsize, color=t["data"],
                   bold=True, font=t["head_font"], align="left", space_after=0)
         tbl, tfl = _textbox(slide, x + pad, y + 1.55, cw - 2 * pad, 0.9)
         _add_para(tfl, _strip_md(str(label)), first=True, size=12.5, color=t["muted"],
@@ -1437,7 +1527,7 @@ def _r_kpi(deck, slide_dict, page):
             tbc, tfc = _textbox(slide, x + pad, y + h - 0.5, cw - 2 * pad, 0.35)
             up = not str(change).strip().startswith("-")
             _add_para(tfc, ("\u25B2 " if up else "\u25BC ") + _strip_md(str(change)),
-                      first=True, size=11, color=(t["accent"] if up else "C0392B"),
+                      first=True, size=11, color=(t["data"] if up else "C0392B"),
                       bold=True, font=t["body_font"], space_after=0)
 
 
@@ -2270,6 +2360,9 @@ def _normalize_chart(slide: dict):
 
 
 def _series_colors(theme, n):
+    if theme.get("series"):
+        fixed = theme["series"]
+        return [fixed[i] if i < len(fixed) else _lighten(theme["data"], 0.15 * (i % 5)) for i in range(max(n, 1))]
     base = [theme["accent"], theme["primary"], theme["light_accent"],
             _lighten(theme["accent"], 0.35), _darken(theme["primary"], 0.2),
             _lighten(theme["primary"], 0.4)]
@@ -2281,6 +2374,9 @@ def _series_colors(theme, n):
 
 def _circular_colors(theme, n):
     """Saturated mid/dark slice colours so white % labels stay readable."""
+    if theme.get("series_circular"):
+        fixed = theme["series_circular"]
+        return [fixed[i] if i < len(fixed) else _mix(theme["data"], theme["primary"], (i % 5) / 5) for i in range(max(n, 1))]
     base = [theme["accent"], theme["primary"], _mix(theme["accent"], theme["primary"], 0.5),
             _darken(theme["accent"], 0.22), _lighten(theme["primary"], 0.28),
             _darken(theme["primary"], 0.18)]
@@ -2606,7 +2702,7 @@ def _r_funnel(deck, slide_dict, page, nodes):
         w = maxw - (maxw - minw) * (i / max(1, n - 1))
         x = cx - w / 2
         yy = y + i * (bh + 0.12)
-        color = _mix(t["accent"], t["primary"], i / max(1, n - 1))
+        color = _mix(t["data"], t["primary"], i / max(1, n - 1))
         shp = slide.shapes.add_shape(MSO_SHAPE.TRAPEZOID, Inches(x), Inches(yy),
                                      Inches(w), Inches(bh))
         try:
@@ -2645,7 +2741,7 @@ def _r_pyramid(deck, slide_dict, page, nodes):
         w = minw + (maxw - minw) * (i / max(1, n - 1))
         x = cx - w / 2
         yy = y + i * (bh + 0.1)
-        color = _mix(t["accent"], t["primary"], 1 - i / max(1, n - 1))
+        color = _mix(t["data"], t["primary"], 1 - i / max(1, n - 1))
         shp = slide.shapes.add_shape(MSO_SHAPE.TRAPEZOID, Inches(x), Inches(yy),
                                      Inches(w), Inches(bh))
         try:
@@ -2682,7 +2778,7 @@ def _r_cycle(deck, slide_dict, page, nodes):
         ang = -math.pi / 2 + 2 * math.pi * i / n
         x = cx + R * math.cos(ang) - nd / 2
         y = cy + R * math.sin(ang) - nd / 2
-        color = _mix(t["accent"], t["primary"], i / max(1, n - 1))
+        color = _mix(t["data"], t["primary"], i / max(1, n - 1))
         _oval(slide, x, y, nd, fill=color)
         tb, tf = _textbox(slide, x, y, nd, nd, anchor="middle")
         _add_para(tf, str(i + 1), first=True, size=18, color=_on(color), bold=True,
@@ -2711,8 +2807,8 @@ def _r_quadrant(deck, slide_dict, page, nodes):
     quads = (nodes + [{}] * 4)[:4]
     positions = [(x0, y), (x0 + cw + gap, y), (x0, y + ch + gap),
                  (x0 + cw + gap, y + ch + gap)]
-    tints = [t["accent_soft"], _lighten(t["primary"], 0.9),
-             _lighten(t["accent"], 0.82), t["card_soft"]]
+    tints = [_lighten(t["data"], 0.9), _lighten(t["primary"], 0.9),
+             _lighten(t["data"], 0.82), t["card_soft"]]
     for i, (qx, qy) in enumerate(positions):
         _card(slide, qx, qy, cw, ch, fill=tints[i], radius=0.05, shadow=False,
               line=t["card_border"], line_w=1.0)
@@ -2760,14 +2856,14 @@ def _r_bullseye(deck, slide_dict, page, nodes):
     maxd = min(4.4, (FOOTER_Y - top) - 0.4)
     for i in range(n):
         d = maxd * (1 - i / n)
-        color = _mix(_lighten(t["accent"], 0.55), t["accent"], i / max(1, n - 1))
+        color = _mix(_lighten(t["data"], 0.55), t["data"], i / max(1, n - 1))
         _oval(slide, cx - d / 2, cy - d / 2, d, fill=color)
     # center label + legend on right
     lx = cx + maxd / 2 + 0.6
     tb, tf = _textbox(slide, lx, top + 0.4, SLIDE_W_IN - MARGIN - lx, FOOTER_Y - top - 0.4)
     first = True
     for i, node in enumerate(nodes):
-        color = _mix(_lighten(t["accent"], 0.55), t["accent"], (n - 1 - i) / max(1, n - 1))
+        color = _mix(_lighten(t["data"], 0.55), t["data"], (n - 1 - i) / max(1, n - 1))
         _add_para(tf, ("\u25CF " if first else "\u25CF ") + _node_text(node),
                   first=first, size=15, color=t["ink"], bold=True,
                   font=t["body_font"], space_after=2)

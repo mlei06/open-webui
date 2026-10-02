@@ -47,6 +47,8 @@ license: MIT
 # License: MIT — Copyright (c) IANUSTEC.
 #
 # LENOVO STYLE EDITS (everything else is the upstream export, unchanged):
+#   * remote image fetches (_fetch_image_url) go through _guarded_get: public addresses only,
+#     redirects re-checked, size-capped (request-forgery protection, see the block above it).
 #   * every template uses the Lenovo palette and Segoe UI: dark neutral accent and
 #     headings from Michael/branding/tokens.json, Lenovo red only on the cover
 #     (rule bar, kicker), blue for hyperlinks, callout colours from the semantic
@@ -87,6 +89,85 @@ try:
     from PIL import Image  # type: ignore
 except ImportError:
     Image = None  # type: ignore[assignment]
+
+# --- Remote image guard (Michael edit; request-forgery protection) -----------
+# The model (or text injected into its prompt) can put an image URL in a spec. This tool runs
+# inside the Open WebUI container, so an unchecked fetch could reach internal services. Every
+# fetch of a URL the model supplied goes through _guarded_get: http(s) only, the host must resolve
+# to PUBLIC addresses only (private, loopback, link-local, CGNAT, multicast, reserved are refused),
+# the connection is made to the address that was checked (no second DNS lookup, so no rebinding),
+# every redirect is checked again, and the body is size-capped. Data URIs never reach the network.
+_MAX_IMAGE_BYTES = 15 * 1024 * 1024
+_MAX_REDIRECTS = 4
+
+
+def _public_ips(host: str) -> list:
+    """Addresses `host` resolves to, or [] when it does not resolve or ANY address is not public."""
+    import ipaddress
+    import socket
+
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return []
+    out = []
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        except ValueError:
+            return []
+        mapped = getattr(ip, "ipv4_mapped", None)
+        if mapped is not None:
+            ip = mapped
+        if not ip.is_global or ip.is_multicast:
+            return []
+        out.append(str(ip))
+    return out
+
+
+async def _guarded_get(url: str, *, timeout: float = 15, transport=None):
+    """GET a public http(s) URL. Returns (body bytes, content-type) or None when refused or failed.
+
+    `transport` is for tests only (an httpx transport replacing the network).
+    """
+    import asyncio
+    from urllib.parse import urljoin, urlsplit
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, transport=transport) as client:
+            for _ in range(_MAX_REDIRECTS + 1):
+                parts = urlsplit(url)
+                host = parts.hostname
+                if parts.scheme not in ("http", "https") or not host:
+                    return None
+                ips = await asyncio.get_running_loop().run_in_executor(None, _public_ips, host)
+                if not ips:
+                    return None
+                ip = f"[{ips[0]}]" if ":" in ips[0] else ips[0]
+                port = f":{parts.port}" if parts.port else ""
+                target = parts._replace(netloc=ip + port).geturl()
+                host_header = (f"[{host}]" if ":" in host else host) + port
+                ext = {"sni_hostname": host} if parts.scheme == "https" else {}
+                async with client.stream("GET", target, headers={"Host": host_header}, extensions=ext) as r:
+                    if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
+                        url = urljoin(url, r.headers["location"])
+                        continue
+                    if r.status_code != 200:
+                        return None
+                    declared = r.headers.get("content-length")
+                    if declared and declared.isdigit() and int(declared) > _MAX_IMAGE_BYTES:
+                        return None
+                    body, size = [], 0
+                    async for chunk in r.aiter_bytes():
+                        size += len(chunk)
+                        if size > _MAX_IMAGE_BYTES:
+                            return None
+                        body.append(chunk)
+                    return b"".join(body), (r.headers.get("content-type") or "").lower()
+            return None
+    except Exception:
+        return None
+
 
 # Markdown parser stack (for the dual-input pipeline). Wrapped in try/except
 # so the module still imports if these deps are missing — in that case the
@@ -353,24 +434,17 @@ def _normalise_image_bytes(raw: bytes, *, max_width_px: int = 1600) -> tuple[byt
 
 
 async def _fetch_image_url(url: str, *, timeout: int = 15) -> Optional[bytes]:
-    """Best-effort GET on a public image URL. Returns None on any failure.
+    """Best-effort GET on a public image URL. Returns None on any failure or refusal.
 
-    Used by the markdown path to support ``![alt](https://...)`` directly,
-    so the model can drop in arbitrary image URLs without going through the
-    Unsplash / AI-gen resolvers.
+    Used by the markdown path to support ``![alt](https://...)`` directly. Goes through
+    _guarded_get (public addresses only, redirects re-checked, size-capped).
     """
     if not url or not url.lower().startswith(("http://", "https://")):
         return None
-    try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            r = await client.get(url)
-            r.raise_for_status()
-            ctype = (r.headers.get("content-type") or "").lower()
-            if not ctype.startswith("image/"):
-                return None
-            return r.content
-    except Exception:
+    res = await _guarded_get(url, timeout=timeout)
+    if res is None or not res[1].startswith("image/"):
         return None
+    return res[0]
 
 
 def _b64_decode_lenient(data: str) -> Optional[bytes]:

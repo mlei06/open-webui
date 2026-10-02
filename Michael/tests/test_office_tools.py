@@ -377,6 +377,168 @@ class DocumentsToolTests(unittest.TestCase):
         self.assertNotIn('teal accent', text)
 
 
+KPI_DECK = {
+    'title': 'Numbers',
+    'slides': [
+        {'layout': 'cover', 'title': 'Numbers'},
+        {'layout': 'kpi_row', 'title': 'Headline', 'stats': [{'value': '42%', 'label': 'Up', 'change': '+3'}, {'value': '7', 'label': 'Seven'}]},
+        {'layout': 'chart', 'title': 'Revenue', 'chart_type': 'bar', 'labels': ['Q1', 'Q2'], 'values': [1, 2]},
+        {'layout': 'chart', 'title': 'Share', 'chart_type': 'pie', 'labels': ['A', 'B', 'C'], 'values': [1, 2, 3]},
+    ],
+}
+
+
+@unittest.skipUnless(TOOLS_OK, 'python-pptx, python-docx, pydantic or the markdown packages are not installed')
+class SlidesDataColoursTests(unittest.TestCase):
+    """Red is the single accent; data (chart series, KPI numbers) is the blue and neutral palette of tokens.json."""
+
+    def render(self, **spec):
+        tool = slides.Tools()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        tool.valves.pptx_export_dir = self.tmp.name
+        asyncio.run(tool.generate_slides(json.dumps({**KPI_DECK, **spec})))
+        return list(Path(self.tmp.name).glob('*.pptx'))[0]
+
+    def test_series_are_blue_and_neutral_not_red(self):
+        t = slides._resolve_theme({}, [])
+        self.assertEqual(slides._series_colors(t, 3), ['1E40AF', '74697A', '3B82F6'])
+        self.assertNotIn('E1251B', slides._series_colors(t, 12) + slides._circular_colors(t, 12))
+
+    def test_series_colours_come_from_the_brand_tokens(self):
+        tokens = json.loads((HERE / 'branding' / 'tokens.json').read_text())
+        t = slides._resolve_theme({}, [])
+        self.assertEqual(t['data'], tokens['accent']['base'].lstrip('#'))
+        allowed = {c.lstrip('#').upper() for c in [*tokens['accent'].values(), tokens['dark']['ramp']['700'], tokens['dark']['ramp']['800'], tokens['dark']['ramp']['500'], tokens['dark']['ramp']['600']]} | {'74697A'}
+        for colour in t['series'] + t['series_circular']:
+            self.assertIn(colour, allowed)
+
+    def test_charts_and_kpis_in_a_real_deck_carry_no_red(self):
+        path = self.render()
+        charts = ''.join(parts(path, r'ppt/charts/chart\d+\.xml').values())
+        self.assertIn('1E40AF', charts)
+        self.assertNotIn('E1251B', charts)
+        kpi = parts(path, r'ppt/slides/slide2\.xml')['ppt/slides/slide2.xml']
+        run = re.search(r'<a:r>(?:(?!</a:r>).)*<a:t>42%</a:t></a:r>', kpi, re.S).group(0)
+        self.assertIn('1E40AF', run)  # the number itself is blue
+        self.assertNotIn('E1251B', run)
+
+    def test_a_requested_accent_still_colours_the_data(self):
+        t = slides._resolve_theme({'accent': '#00AA55'}, [])
+        self.assertEqual((t['data'], t['series']), ('00AA55', None))
+        self.assertEqual(slides._series_colors(t, 1)[0], '00AA55')
+
+    def test_other_palettes_are_unchanged(self):
+        t = slides._resolve_theme({'theme': 'forest'}, [])
+        self.assertEqual((t['data'], t['series']), (t['accent'], None))
+
+
+def mock_transport(handler):
+    import httpx
+
+    return httpx.MockTransport(handler)
+
+
+@unittest.skipUnless(TOOLS_OK, 'python-pptx, python-docx, pydantic or the markdown packages are not installed')
+class RemoteImageGuardTests(unittest.TestCase):
+    """The generator tools fetch image URLs the model supplies: public addresses only, redirects re-checked."""
+
+    PUBLIC = '93.184.216.34'
+
+    def run_get(self, mod, url, handler=None, **kw):
+        seen = []
+
+        def wrapped(request):
+            seen.append(request)
+            return (handler or (lambda r: __import__('httpx').Response(200, content=b'IMG', headers={'content-type': 'image/png'})))(request)
+
+        real = mod._public_ips
+        with mock.patch.object(mod, '_public_ips', lambda h: [self.PUBLIC] if h == 'public.example' else real(h)):
+            res = asyncio.run(mod._guarded_get(url, transport=mock_transport(wrapped), **kw))
+        return res, seen
+
+    def test_internal_and_non_http_targets_never_touch_the_network(self):
+        for mod in (slides, docs):
+            for url in ('http://127.0.0.1/x', 'http://localhost/x', 'http://169.254.169.254/latest/meta-data', 'http://10.1.2.3/', 'http://192.168.0.5/', 'http://172.16.0.9/',
+                        'http://100.64.0.1/', 'http://0.0.0.0/', 'http://[::1]/', 'http://[::ffff:10.0.0.1]/', 'http://[fe80::1]/', 'file:///etc/passwd', 'ftp://public.example/a', 'gopher://public.example/', 'data:image/png;base64,AAAA', 'http:///nohost'):
+                res, seen = self.run_get(mod, url)
+                self.assertIsNone(res, url)
+                self.assertEqual(seen, [], url)
+
+    def test_a_public_host_is_fetched_by_its_checked_address(self):
+        for mod in (slides, docs):
+            res, seen = self.run_get(mod, 'https://public.example:8443/a.png')
+            self.assertEqual(res, (b'IMG', 'image/png'))
+            req = seen[0]
+            self.assertEqual(req.url.host, self.PUBLIC)  # the address that was checked, not a second lookup
+            self.assertEqual(req.headers['host'], 'public.example:8443')
+            self.assertEqual(req.extensions.get('sni_hostname'), 'public.example')
+
+    def test_a_redirect_to_an_internal_address_is_refused(self):
+        import httpx
+
+        for target in ('http://127.0.0.1/secret', 'http://169.254.169.254/', 'http://localhost:8080/', 'http://10.0.0.1/', 'file:///etc/passwd'):
+            for mod in (slides, docs):
+                res, seen = self.run_get(mod, 'http://public.example/start', lambda r, t=target: httpx.Response(302, headers={'location': t}))
+                self.assertIsNone(res, target)
+                self.assertEqual(len(seen), 1, target)  # only the public first hop was requested
+
+    def test_a_redirect_to_a_public_address_is_followed_and_redirect_loops_stop(self):
+        import httpx
+
+        calls = []
+
+        def handler(r):
+            calls.append(str(r.url))
+            if r.url.path == '/start':
+                return httpx.Response(301, headers={'location': '/final.png'})
+            return httpx.Response(200, content=b'OK', headers={'content-type': 'image/jpeg'})
+
+        res, _ = self.run_get(slides, 'http://public.example/start', handler)
+        self.assertEqual(res, (b'OK', 'image/jpeg'))
+        loop, seen = self.run_get(slides, 'http://public.example/a', lambda r: httpx.Response(302, headers={'location': '/a'}))
+        self.assertIsNone(loop)
+        self.assertEqual(len(seen), slides._MAX_REDIRECTS + 1)
+
+    def test_oversized_and_failing_responses_are_refused(self):
+        import httpx
+
+        for mod in (slides, docs):
+            big = b'x' * (mod._MAX_IMAGE_BYTES + 1)
+            self.assertIsNone(self.run_get(mod, 'http://public.example/a', lambda r: httpx.Response(200, content=big))[0])
+            self.assertIsNone(self.run_get(mod, 'http://public.example/a', lambda r: httpx.Response(404))[0])
+
+            def boom(r):
+                raise httpx.ConnectError('down')
+
+            self.assertIsNone(self.run_get(mod, 'http://public.example/a', boom)[0])
+
+    def test_name_that_resolves_to_any_internal_address_is_refused(self):
+        import socket
+
+        for mod in (slides, docs):
+            infos = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('93.184.216.34', 0)), (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('10.0.0.8', 0))]
+            with mock.patch('socket.getaddrinfo', return_value=infos):
+                self.assertEqual(mod._public_ips('mixed.example'), [])
+            with mock.patch('socket.getaddrinfo', return_value=infos[:1]):
+                self.assertEqual(mod._public_ips('ok.example'), ['93.184.216.34'])
+            with mock.patch('socket.getaddrinfo', side_effect=socket.gaierror):
+                self.assertEqual(mod._public_ips('nope.example'), [])
+
+    def test_the_tools_use_the_guard(self):
+        import httpx
+
+        res, seen = self.run_get(docs, 'http://127.0.0.1/a')
+        self.assertIsNone(asyncio.run(docs._fetch_image_url('http://127.0.0.1/a')))
+        self.assertIsNone(asyncio.run(slides._fetch_url('http://169.254.169.254/')))
+        with mock.patch.object(slides, '_guarded_get', mock.AsyncMock(return_value=(b'IMG', 'image/png'))) as g:
+            self.assertEqual(asyncio.run(slides._fetch_url('https://public.example/a.png')), b'IMG')
+            g.assert_awaited_once()
+        with mock.patch.object(docs, '_guarded_get', mock.AsyncMock(return_value=(b'<html>', 'text/html'))):
+            self.assertIsNone(asyncio.run(docs._fetch_image_url('https://public.example/a')))
+        self.assertTrue(httpx)
+
+
 def contrast(a, b):
     def lum(h):
         r, g, bl = (int(h[i : i + 2], 16) / 255 for i in (0, 2, 4))
