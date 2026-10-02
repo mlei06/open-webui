@@ -189,7 +189,7 @@ The gateway's base64-carrying tools are filtered out on purpose, so the model ca
 
 ### Provisioning and the preset
 
-Scripts: `Michael/bootstrap/mcp_servers.py` registers the MCP connection; `Michael/bootstrap/translator_tool.py` creates the tool and its valves, and `Michael/bootstrap/presets.py` creates the preset. Settings in `Michael/.env` (placeholders in `.env.example`): `TRANSLATOR_GATEWAY_URL` (reachable from the container, for example `http://host.docker.internal:8766/mcp`), `TRANSLATOR_API_KEY`, `TRANSLATOR_BASE_MODEL` (a model id listed by Open WebUI), optional `TRANSLATOR_ID`, plus the admin credentials.
+Scripts: `Michael/bootstrap/mcp_servers.py` registers the MCP connection; `Michael/bootstrap/translator_tool.py` creates the tool and its valves, and `Michael/bootstrap/presets.py` creates the preset. Settings in `Michael/.env` (placeholders in `.env.example`): `TRANSLATOR_GATEWAY_URL` (reachable from the container, for example `http://host.docker.internal:8766/mcp`), `TRANSLATOR_API_KEY`, optional `TRANSLATOR_ID`, plus the admin credentials. The tool's base model is the presets' one (`PRESETS_BASE_MODEL`, then `TRANSLATOR_BASE_MODEL`, then Gemma from `models/presets.json`), so switching the presets switches the model registered for every user too. `bootstrap/provision.py` runs all of this in order.
 
 ```
 python3 Michael/bootstrap/mcp_servers.py

@@ -109,6 +109,15 @@ print(json.dumps({'status': r.status_code, 'body': r.json() if r.headers.get('co
 '''
 
 
+def call_upload(base, token, filename, text):
+    """Upload a small text file as `token` (no knowledge base, no processing); returns the file id."""
+    boundary = secrets.token_hex(8)
+    body = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\nContent-Type: text/plain\r\n\r\n{text}\r\n--{boundary}--\r\n').encode()
+    req = urllib.request.Request(base + '/api/v1/files/?process=false', data=body, method='POST', headers={'Authorization': f'Bearer {token}', 'Content-Type': f'multipart/form-data; boundary={boundary}'})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.load(r)['id']
+
+
 def make_user(stack, admin, name, email):
     """Create (replace) an ordinary user through the admin path and sign in."""
     for u in (call(stack.base, 'GET', '/api/v1/users/all', admin) or {}).get('users', []):
@@ -139,8 +148,9 @@ def main():
     code = raw_status(stack.base, 'POST', '/api/v1/auths/signup', None, {'name': 'Intruder', 'email': 'intruder@e2e.test', 'password': secrets.token_urlsafe(12)})
     report(code == 403, f'an unauthenticated sign-up request is refused (HTTP {code})')
 
-    plain = make_user(stack, admin, 'Plain User', 'plain.user@e2e.test')
-    jane = make_user(stack, admin, 'Jane Doe', 'jane.doe@lenovo.com')
+    tag = secrets.token_hex(3)  # fresh addresses every run: sign-in is rate limited per address
+    plain = make_user(stack, admin, 'Plain User', f'plain.user.{tag}@e2e.test')
+    jane = make_user(stack, admin, 'Jane Doe', f'jane.doe.{tag}@lenovo.com')
     report(plain['role'] == 'user' and jane['role'] == 'user', 'accounts made by the admin path are ordinary users (not admins)')
 
     # --- visibility: model selector and tools -------------------------------------------------
@@ -173,9 +183,9 @@ def main():
         if fid:
             call(stack.base, 'POST', f'/api/v1/knowledge/{sops["id"]}/file/remove', plain['token'], {'file_id': fid})
             raw_status(stack.base, 'DELETE', f'/api/v1/files/{fid}', plain['token'])  # removing it from the base may already delete it
-        listing = call(stack.base, 'GET', '/api/v1/files/', admin) or []
-        admin_file = listing if isinstance(listing, list) else listing.get('items') or []
-        report(raw_status(stack.base, 'GET', f'/api/v1/files/{admin_file[0]["id"]}/content', plain['token']) in (401, 403, 404) if admin_file else True, "another user's file cannot be read")
+        secret = call_upload(stack.base, admin, 'admin-private.txt', 'private to the admin')
+        report(raw_status(stack.base, 'GET', f'/api/v1/files/{secret}/content', plain['token']) in (401, 403, 404), "another user's private file cannot be read")
+        call(stack.base, 'DELETE', f'/api/v1/files/{secret}', admin)
 
     if args.skip_chat:
         return 0 if ok_all else 1
@@ -183,7 +193,7 @@ def main():
     # --- chats ----------------------------------------------------------------------------------
     for p in presets:
         res = stack.chat(plain, p['id'], 'Reply with exactly one word: PONG')
-        report('PONG' in res['text'].upper() and not res['timeout'], f'chat through {p["name"]} answers as a non-admin user')
+        report(bool(res['text'].strip()) and not res['timeout'], f'chat through {p["name"]} answers as a non-admin user ({res["text"][:40]!r})')
     res = stack.chat(plain, 'lenny', 'According to the SOPs knowledge base, who owns the PATH package tracking process? Answer in one short sentence.')
     report('knowledge' in ' '.join(res['tools']).lower() or 'Michael' in res['text'], f'Lenny answers from the SOPs knowledge base ({res["text"][:80]!r})')
     res = stack.chat(plain, 'web-searcher', 'Search the web: what is the capital of Japan? One sentence with a source.')

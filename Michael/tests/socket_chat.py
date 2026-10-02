@@ -64,7 +64,7 @@ async def main():
         uid: {'id': uid, 'role': 'user', 'content': PROMPT, 'parentId': None, 'childrenIds': [aid], 'models': [MODEL], 'timestamp': now},
         aid: {'id': aid, 'role': 'assistant', 'content': '', 'parentId': uid, 'childrenIds': [], 'model': MODEL, 'timestamp': now}}}}
     chat_id = http('POST', '/api/v1/chats/new', token, {'chat': chat})['id']
-    http('POST', '/api/chat/completions', token, {'model': MODEL, 'stream': True, 'chat_id': chat_id, 'id': aid, 'session_id': sio.sid, 'tool_ids': tool_ids, 'messages': [{'role': 'user', 'content': PROMPT}]})
+    http('POST', '/api/chat/completions', token, {'model': MODEL, 'stream': True, 'chat_id': chat_id, 'id': aid, 'session_id': sio.namespaces['/'], 'tool_ids': tool_ids, 'messages': [{'role': 'user', 'content': PROMPT}]})
     timed_out = False
     try:
         await asyncio.wait_for(finished.wait(), timeout=WAIT)
