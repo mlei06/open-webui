@@ -14,7 +14,7 @@ Read [onboarding](docs/ONBOARDING.md) before implementation. This repository is 
 | `functions/` | Open WebUI functions (`user_context.py` filter) |
 | `prompts/` | Versioned specialist system prompts |
 | `models/` | Model/agent preset manifests; `user-context.json` sets which user fields each model receives |
-| `bootstrap/` | Authenticated, idempotent provisioning (`build_ca_bundle.py`, `davy_connection.py`, `xai_connection.py`, `translator_tool.py`, `user_context.py`) |
+| `bootstrap/` | Authenticated, idempotent provisioning (`build_ca_bundle.py`, `davy_connection.py`, `xai_connection.py`, `translator_tool.py`, `user_context.py`, `branding.py`) |
 | `services/` | Local MCP/bridge/worker container build contexts |
 | `tests/` | Filter unit tests, throwaway-stack end-to-end check, model-request log proxy; `fixtures/` holds synthetic test files only |
 | `runtime/` | Ignored certificates, secrets, local data |
@@ -138,3 +138,23 @@ Use **one global filter that reads the config**. Per-model attachment is documen
 Limits: only chat requests that go through Open WebUI's chat pipeline are affected. Background tasks (titles, tags, follow-ups) do not run inlet filters (read from the code, not exercised) and the embedding and reranker endpoints are not chat requests; the filter runs for API clients calling `/api/chat/completions` too (their requests have no chat id, which is fine as it needs none) but not for clients that call the provider directly. A model that is told these facts can still repeat them to the user it is talking to, which is the point, but do not rely on the block as a security boundary: a user can also write the same text in their own message. Anyone allowed to edit functions can read the user's account data in the filter, so keep function creation admin-only (the Open WebUI default) and review changes to `functions/user_context.py`.
 
 Non-admin users only see models that have a registered row with a read grant; the end-to-end script registers the test models itself, and the live instance must already have them (the translator bootstrap does the same for its base model).
+
+Limits: files over 8 MiB are refused with a clear message (the gateway's inline limit); the gateway returns only a generic message when the translator rejects a submission (for example HTTP 422); job ids are not scoped per user because all users share one translator key. The key is stored in the tool valves and the MCP connection (admin-readable) and is loaded into the container by compose through `.env`.
+
+## Bootstrap: Lenovo branding
+
+`bootstrap/branding.py` applies the Lenovo look (dark purple gradient by default, a light variant, Segoe UI with a self-hosted Archivo fallback, the logo on the sign-in page, loading splash and sidebar, Lenovo red only on the logo and the selected-chat edge, blue for the one pressable colour). It uses the **Theme Designer Pro** plugin (community, MIT, not tracked here) as the delivery channel and does what the designer's Save button does, without the designer. Same conventions as the other bootstrap scripts (PASS/FAIL output, secrets never printed, re-runs change nothing, standard library only).
+
+- `branding/tokens.json` holds the colour tokens, `branding/theme.css` the rules. Both are committed; neither contains a logo or a font.
+- The logo and font are brand binaries and are **not committed**. They live in the gitignored `runtime/brand/` and are embedded into the CSS as `data:` URIs at upload time, so nothing is loaded from the network.
+  `python3 Michael/bootstrap/branding.py --init-assets --font /path/to/archivo-latin.woff2` writes a **placeholder** logo (a red tile with the word "Lenovo", not the official artwork) and copies the font. Drop an official `lenovo-logo.svg` or `.png` into `runtime/brand/` to replace the placeholder.
+- The plugin accepts an admin session token only, so besides the admin API key the script needs `OPEN_WEBUI_ADMIN_EMAIL` and `OPEN_WEBUI_ADMIN_PASSWORD` in `.env`.
+- The script installs the plugin from `tools/theme_designer_pro.py` if missing (the plugin file itself is not committed), enables it, and sets its valves to: Canvas FX off, Canvas API access off, community-theme catalogue off, URL import off. It then uploads the theme and verifies what users are served. `--check` verifies without changing anything.
+- Do not open the designer and press Save: that replaces the theme with the designer's own state. Re-run `branding.py` to restore it.
+- Set `WEBUI_NAME=AI Assistant` (or similar) in `.env` so the header reads "[Lenovo logo] AI Assistant (Open WebUI)"; Open WebUI always appends "(Open WebUI)".
+- Licence: Open WebUI's `LICENSE` forbids replacing its branding for deployments with more than 50 users unless there is an enterprise licence or written permission. Settle that before applying this to a shared stack.
+
+```bash
+python3 Michael/bootstrap/branding.py --init-assets --font /path/to/archivo-latin.woff2
+python3 Michael/bootstrap/branding.py
+```

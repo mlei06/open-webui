@@ -1,0 +1,127 @@
+/* Lenovo house style for Open WebUI.
+ *
+ * Colour never appears here: it comes from the --lnv-* custom properties that
+ * bootstrap/branding.py sets per mode from tokens.json (dark = html.dark, light =
+ * everything else). Tokens injected at build time: --lnv-font, --lnv-logo,
+ * --lnv-bg, --lnv-sidebar, --lnv-panel, --lnv-panel-raised, --lnv-rule,
+ * --lnv-text, --lnv-link, --lnv-action, --lnv-on-action, --lnv-focus, --lnv-red.
+ *
+ * Lenovo red is the mark only: the logo and the leading edge of the selected
+ * chat. It is never a fill behind text and never an action. Blue is the one
+ * pressable colour. Fonts and the logo are embedded as data: URIs, so nothing
+ * here loads from the network.
+ */
+
+/* ---- Type ---------------------------------------------------------------- */
+html, body, button, input, select, textarea,
+.tiptap, .ProseMirror, .font-primary, .font-secondary {
+  font-family: var(--lnv-font) !important;
+}
+
+/* ---- Ground: the brand gradient, with the app shell see-through ---------- */
+html, body {
+  background-color: var(--lnv-fallback) !important;
+  background-image: var(--lnv-bg) !important;
+  background-attachment: fixed !important;
+  background-size: cover !important;
+}
+.app, .app > div, #auth-page > div:first-child { background: transparent !important; }
+#navbar-bg-gradient-to-b,
+#chat-container .bg-linear-to-t { background-image: none !important; }
+
+/* Placeholders: the stock gray-300/600 fall below 4.5:1 on the brand surfaces. */
+::placeholder, .tiptap p.is-editor-empty:first-child::before {
+  color: var(--color-gray-500) !important;
+  opacity: 1;
+}
+
+/* ---- Loading splash: brand ground and logo in place of the stock mark ---- */
+#splash-screen { background: var(--lnv-bg) !important; background-color: var(--lnv-fallback) !important; }
+#splash-screen img { display: none !important; }
+#splash-screen > div::before {
+  content: '';
+  display: block;
+  width: 168px;
+  height: 52px;
+  margin-bottom: 1.5rem;
+  background: var(--lnv-logo) center / contain no-repeat;
+}
+
+/* ---- Sidebar ------------------------------------------------------------- */
+#sidebar {
+  background: var(--lnv-sidebar) !important;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-right: 1px solid var(--lnv-rule);
+}
+#sidebar .sidebar-bg-gradient-to-b { background-image: none !important; }
+#sidebar a:has(> #sidebar-webui-name) { min-width: 0; overflow: hidden; }
+#sidebar-webui-name {
+  font-size: 0.8125rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The logo replaces the stock icon in the header row. */
+#sidebar a:has(> .sidebar-new-chat-icon) { width: auto !important; padding: 0 4px; }
+#sidebar a:has(> .sidebar-new-chat-icon) > .sidebar-new-chat-icon { display: none; }
+#sidebar a:has(> .sidebar-new-chat-icon)::before {
+  content: '';
+  display: block;
+  width: 62px;
+  height: 20px;
+  background: var(--lnv-logo) left center / contain no-repeat;
+}
+/* Where you are: a raised plate with the signature red on its leading edge. */
+#sidebar a.selected, #sidebar a[aria-current='page'] {
+  background: var(--lnv-panel) !important;
+  box-shadow: inset 3px 0 0 var(--lnv-red);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+/* ---- Chat ---------------------------------------------------------------- */
+.chat-user .rounded-3xl {
+  background: var(--lnv-panel-raised) !important;
+  border: 1px solid var(--lnv-rule);
+}
+#send-message-button {
+  background: var(--lnv-action) !important;
+  color: var(--lnv-on-action) !important;
+}
+.markdown-prose a, .prose a { color: var(--lnv-link); }
+:is(a, button, input, textarea, select):focus-visible {
+  outline: 2px solid var(--lnv-focus) !important;
+  outline-offset: 2px;
+}
+
+/* ---- Sign-in page -------------------------------------------------------- */
+#auth-page #logo { display: none; }
+#auth-page #auth-login-card {
+  max-width: 28rem;
+  padding: 2.25rem 2rem 2.5rem !important;
+  margin-block: auto;
+  background: var(--lnv-sidebar);
+  border: 1px solid var(--lnv-rule);
+  border-radius: 1rem;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: var(--lnv-text);
+}
+#auth-page #auth-login-card::before {
+  content: '';
+  display: block;
+  width: 168px;
+  height: 52px;
+  margin: 0 auto 1.5rem;
+  background: var(--lnv-logo) center / contain no-repeat;
+}
+#auth-page #auth-login-card input {
+  border-bottom: 1px solid var(--lnv-rule);
+  padding-bottom: 0.35rem !important;
+}
+#auth-page #auth-login-card button[type='submit'] {
+  background: var(--lnv-action) !important;
+  color: var(--lnv-on-action) !important;
+  font-weight: 600;
+}
