@@ -232,11 +232,11 @@ Select Yours to narrow the list to packages addressed to you.
 
 Click the video to play the demonstration
 
-https://10.41.41.102
+https://path.lenovo.com
 
 **Speaker notes:**
 
-Website address supplied by user; may change. Address is on the internal network.
+Website address supplied by user: the production address, path.lenovo.com.
 Source: supplied PATH demo and user-approved SOP. Template: Cake 2.0 LXG presentation template.potx.
 
 ## Slide 11: Package details and pickup history
@@ -322,13 +322,13 @@ Back to contents
 
 1. Download the certificate
 
-http://10.41.41.102/ca.crt
+http://path.lenovo.com/ca.crt
 
 Install the approved PATH certificate. Contact Michael if setup is blocked.
 
 2. Open phone check-in
 
-https://10.41.41.102/phone
+https://path.lenovo.com/phone
 
 Scan the second QR code after certificate setup. Allow camera access when prompted.
 
