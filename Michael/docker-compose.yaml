@@ -15,7 +15,7 @@ services:
     environment:
       ENABLE_OLLAMA_API: "false"
       # Fallback for the in-container CA path; .env may override it.
-      AIOHTTP_CLIENT_SSL_CERT_FILE: ${AIOHTTP_CLIENT_SSL_CERT_FILE:-/certs/davy-ca-bundle.pem}
+      AIOHTTP_CLIENT_SSL_CERT_FILE: ${AIOHTTP_CLIENT_SSL_CERT_FILE:-/certs/ca-bundle.pem}
     volumes:
       - open-webui:/app/backend/data
       - ./runtime/certs:/certs:ro

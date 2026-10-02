@@ -14,7 +14,7 @@ Read [onboarding](docs/ONBOARDING.md) before implementation. This repository is 
 | `functions/` | Open WebUI functions (`user_context.py` filter) |
 | `prompts/` | Versioned specialist system prompts |
 | `models/` | Model/agent preset manifests; `user-context.json` sets which user fields each model receives |
-| `bootstrap/` | Authenticated, idempotent provisioning (`davy_connection.py`, `translator_tool.py`, `user_context.py`) |
+| `bootstrap/` | Authenticated, idempotent provisioning (`build_ca_bundle.py`, `davy_connection.py`, `xai_connection.py`, `translator_tool.py`, `user_context.py`) |
 | `services/` | Local MCP/bridge/worker container build contexts |
 | `tests/` | Filter unit tests, throwaway-stack end-to-end check, model-request log proxy; `fixtures/` holds synthetic test files only |
 | `runtime/` | Ignored certificates, secrets, local data |
@@ -25,8 +25,9 @@ Read [onboarding](docs/ONBOARDING.md) before implementation. This repository is 
 ## Runtime setup
 
 1. Copy `.env.example` to `.env` and supply private values locally (`OPENAI_API_BASE_URLS` ending in `/v1`, `OPENAI_API_KEYS`, `WEBUI_SECRET_KEY`).
-2. Copy the approved CA bundle to `runtime/certs/davy-ca-bundle.pem`. `runtime/` and `.env` are gitignored. `AIOHTTP_CLIENT_SSL_CERT_FILE` in `.env.example` already points at the in-container mount path. Do not disable TLS verification.
-3. From the repository root, start the stack:
+2. Place certificates: copy the approved private CA bundle to `runtime/certs/davy-ca-bundle.pem`. `runtime/` and `.env` are gitignored. Do not disable TLS verification.
+3. Build the bundle: `python3 Michael/bootstrap/build_ca_bundle.py` writes `runtime/certs/ca-bundle.pem`, the host's system CA bundle plus every other `.pem` in that folder. Open WebUI trusts only the file named by `AIOHTTP_CLIENT_SSL_CERT_FILE` (default `/certs/ca-bundle.pem`, the in-container path of this file), so the private bundle alone cannot verify public services such as xAI. Re-run it whenever certificates change; it prints PASS or FAIL and leaves an unchanged bundle untouched.
+4. From the repository root, start the stack:
 
 ```
 docker compose --env-file Michael/.env -f Michael/docker-compose.yaml up --build -d
@@ -48,7 +49,17 @@ Open WebUI persists connection settings in its database after first start; on an
 python3 Michael/bootstrap/davy_connection.py
 ```
 
-`AIOHTTP_CLIENT_SSL_CERT_FILE` is the path **inside the container** (`/certs/davy-ca-bundle.pem`), not a host path. The script only checks that the matching file exists under `Michael/runtime/certs/`; the real test of trust is the verify step, which Open WebUI performs from inside the container with that bundle. A verification failure usually means a wrong key or an untrusted/missing CA bundle.
+`AIOHTTP_CLIENT_SSL_CERT_FILE` is the path **inside the container** (`/certs/ca-bundle.pem`), not a host path. The script only checks that the matching file exists under `Michael/runtime/certs/`; the real test of trust is the verify step, which Open WebUI performs from inside the container with that bundle. A verification failure usually means a wrong key or an untrusted/missing CA bundle.
+
+## Bootstrap: xAI (Grok) connection
+
+`bootstrap/xai_connection.py` adds xAI as a second OpenAI-compatible connection beside the Davy one. Same conventions as `davy_connection.py` (admin credentials, PASS/FAIL output, standard library only), and it reuses its helpers. Through the admin API it adds or updates the connection (matched by URL, so re-runs change nothing and never duplicate it), leaves every other connection untouched, then verifies that the provider and Open WebUI list models. A response that may contain the key is masked; the key is never printed. With `XAI_API_KEY` empty it does nothing.
+
+xAI is an outside service: send it only synthetic or approved data. Supply `XAI_API_KEY` (and `XAI_API_BASE_URL`, prefilled with `https://api.x.ai/v1`) in `Michael/.env`, make sure the combined CA bundle is built and the stack was restarted with it (the Davy bundle alone fails certificate verification for `api.x.ai`), then with the admin credentials from the Davy section:
+
+```
+python3 Michael/bootstrap/xai_connection.py
+```
 
 ## Bootstrap: document translator
 
