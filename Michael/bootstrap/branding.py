@@ -20,6 +20,8 @@ button does, without the designer:
   python3 Michael/bootstrap/branding.py --init-assets   create the placeholder logo and
                                                        copy the font (--font PATH)
   python3 Michael/bootstrap/branding.py --check         verify only, change nothing
+  python3 Michael/bootstrap/branding.py --verify-render headless-browser render check
+  python3 Michael/bootstrap/branding.py --rollback      switch the theme plugin off
 
 The plugin accepts an admin JWT only, not an API key, so the theme upload needs
 OPEN_WEBUI_ADMIN_EMAIL and OPEN_WEBUI_ADMIN_PASSWORD in Michael/.env. The
@@ -186,7 +188,7 @@ def mode_block(selector, t, tokens):
     return '\n'.join(lines) + '\n'
 
 
-def build_sections(tokens, logo_path, font_path):
+def build_sections(tokens, logo_path):
     logo_mime = 'image/svg+xml' if logo_path.suffix == '.svg' else 'image/png'
     shared = (
         ':root {\n'
@@ -194,10 +196,16 @@ def build_sections(tokens, logo_path, font_path):
         f'  --lnv-logo: url("{data_uri(logo_path, logo_mime)}");\n'
         '}\n'
     )
+    # The font is NOT embedded. Theme Designer Pro's loader.js runs
+    # css.replace(/[^{}]*body\s*::before\s*\{[^}]*\}/g, '') over the whole theme on
+    # every repaint; that pattern is quadratic in the longest run of text with no
+    # brace in it, so a 90 KB font as a data: URI (a 120 KB run) froze the main
+    # thread for seconds per call and the app never hydrated. Keep every
+    # brace-free run short (see longest_plain_run) and use an installed Archivo.
     font_face = (
         '@font-face {\n'
         "  font-family: 'Lenovo Archivo';\n"
-        f"  src: url('{data_uri(font_path, 'font/woff2')}') format('woff2');\n"
+        "  src: local('Archivo'), local('Archivo Regular');\n"
         '  font-weight: 400 700;\n'
         '  font-style: normal;\n'
         '  font-display: swap;\n'
@@ -310,6 +318,15 @@ def served_matches(base, flat_css):
         return False
 
 
+# Longest allowed run of CSS with no `{` or `}`. The plugin's loader.js applies a
+# regex that is quadratic in this (3.2 s for a 120 KB run, 2 ms for 9 KB total).
+MAX_PLAIN_RUN = 6000
+
+
+def longest_plain_run(css):
+    return max((len(m) for m in re.split(r'[{}]', css)), default=0)
+
+
 def external_urls(css):
     """http(s) or protocol-relative URLs in the CSS (data: URIs are fine)."""
     found = re.findall(r'(?:url\(\s*[\'"]?|@import\s+[\'"]?)((?:https?:)?//[^\s\'")]+)', css)
@@ -338,11 +355,38 @@ def init_assets(font_src):
     return 0
 
 
+def rollback(env, base):
+    """Switch Theme Designer Pro off: /static/custom.css then serves 0 bytes."""
+    try:
+        token = session_token(env, base)
+        fn = call(base, 'GET', f'/api/v1/functions/id/{FUNCTION_ID}', token)
+        if fn.get('is_active'):
+            fn = call(base, 'POST', f'/api/v1/functions/id/{FUNCTION_ID}/toggle', token)
+        print(f'[{"PASS" if not fn.get("is_active") else "FAIL"}] theme plugin is off')
+        print(f'[INFO] /static/custom.css now serves {len(get_text(base, "/static/custom.css"))} bytes; hard-reload the browser')
+        return 0 if not fn.get('is_active') else 1
+    except ApiError as e:
+        print(f'[FAIL] {e}')
+        return 1
+
+
+def verify_render(env, base):
+    """Run tests/verify_render.mjs (Node + playwright-core + Chromium)."""
+    import os
+    import subprocess
+
+    script = MICHAEL_DIR / 'tests' / 'verify_render.mjs'
+    e = {**os.environ, 'BASE': base, 'ENVF': str(MICHAEL_DIR / '.env')}
+    return subprocess.call(['node', str(script)], env=e)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--init-assets', action='store_true', help='create the placeholder logo and copy the font')
     ap.add_argument('--font', help='with --init-assets: path to archivo-latin.woff2')
     ap.add_argument('--check', action='store_true', help='verify only; change nothing')
+    ap.add_argument('--verify-render', action='store_true', help='headless-browser check that the login form and the app render (see tests/verify_render.mjs)')
+    ap.add_argument('--rollback', action='store_true', help='switch the theme plugin off through the admin API (one-step recovery from a stuck UI)')
     args = ap.parse_args()
 
     if args.init_assets:
@@ -350,6 +394,10 @@ def main():
 
     env = load_env()
     base = (env.get('OPEN_WEBUI_URL') or f'http://localhost:{env.get("OPEN_WEBUI_PORT") or 3000}').rstrip('/')
+    if args.rollback:
+        return rollback(env, base)
+    if args.verify_render:
+        return verify_render(env, base)
     ok = True
 
     def report(passed, msg):
@@ -361,17 +409,18 @@ def main():
     for passed, msg in contrast_report(tokens):
         report(passed, f'contrast, {msg}')
 
-    logo, font = find_logo(), BRAND_DIR / FONT_FILE
+    logo = find_logo()
     report(bool(logo), 'logo present in Michael/runtime/brand/' + (f' ({logo.name})' if logo else ' (run --init-assets)'))
-    report(font.is_file(), f'font present in Michael/runtime/brand/{FONT_FILE}' + ('' if font.is_file() else ' (run --init-assets --font PATH)'))
-    if not (logo and font.is_file()):
+    if not logo:
         print('RESULT: FAIL')
         return 1
 
-    sections = build_sections(tokens, logo, font)
+    sections = build_sections(tokens, logo)
     flat = ''.join((sections['vars'], sections['structural'], sections['gradient'], sections['custom']))
     leaked = external_urls(flat)
     report(not leaked, 'theme CSS loads nothing from the network' if not leaked else f'theme CSS references {len(leaked)} external URL(s)')
+    run = longest_plain_run(flat)
+    report(run <= MAX_PLAIN_RUN, f'longest brace-free run {run} chars (limit {MAX_PLAIN_RUN}; longer freezes the plugin loader, which hangs the app)')
     if not ok:
         print('RESULT: FAIL')
         return 1
@@ -397,7 +446,7 @@ def main():
         served = get_text(base, f'{ROUTE}/theme.css')
         report(served.strip() == flat.strip(), 'served /theme.css matches the uploaded theme')
         shared = get_text(base, '/static/custom.css')
-        report('--lnv-font' in shared and '@font-face' in shared, 'first-paint /static/custom.css carries the theme')
+        report('--lnv-font' in shared and '@font-face' in shared and longest_plain_run(shared) <= MAX_PLAIN_RUN, 'first-paint /static/custom.css carries the theme')
         report(not external_urls(shared), 'first-paint CSS loads nothing from the network')
     except ApiError as e:
         report(False, str(e))

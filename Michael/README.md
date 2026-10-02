@@ -146,8 +146,9 @@ Limits: files over 8 MiB are refused with a clear message (the gateway's inline 
 `bootstrap/branding.py` applies the Lenovo look (dark purple gradient by default, a light variant, Segoe UI with a self-hosted Archivo fallback, the logo on the sign-in page, loading splash and sidebar, Lenovo red only on the logo and the selected-chat edge, blue for the one pressable colour). It uses the **Theme Designer Pro** plugin (community, MIT, not tracked here) as the delivery channel and does what the designer's Save button does, without the designer. Same conventions as the other bootstrap scripts (PASS/FAIL output, secrets never printed, re-runs change nothing, standard library only).
 
 - `branding/tokens.json` holds the colour tokens, `branding/theme.css` the rules. Both are committed; neither contains a logo or a font.
-- The logo and font are brand binaries and are **not committed**. They live in the gitignored `runtime/brand/` and are embedded into the CSS as `data:` URIs at upload time, so nothing is loaded from the network.
+- The logo and font are brand binaries and are **not committed**. They live in the gitignored `runtime/brand/`. The logo is embedded into the CSS as a `data:` URI at upload time, so nothing is loaded from the network. The font is **not** embedded (see the incident note below): the theme asks for an installed `Archivo` and otherwise falls back to the Segoe UI stack.
   `python3 Michael/bootstrap/branding.py --init-assets --font /path/to/archivo-latin.woff2` writes a **placeholder** logo (a red tile with the word "Lenovo", not the official artwork) and copies the font. Drop an official `lenovo-logo.svg` or `.png` into `runtime/brand/` to replace the placeholder.
+- **Never embed a large `data:` URI in the theme.** Theme Designer Pro's `loader.js` runs `css.replace(/[^{}]*body\s*::before\s*\{[^}]*\}/g, '')` over the whole theme on every repaint. That regex is quadratic in the longest run of text with no brace, so the 90 KB font as a `data:` URI (a 120 KB run) blocked the main thread for 3+ seconds per call, and the app never got past the splash (no console error). `branding.py` now fails if any brace-free run exceeds 6000 characters.
 - The plugin accepts an admin session token only, so besides the admin API key the script needs `OPEN_WEBUI_ADMIN_EMAIL` and `OPEN_WEBUI_ADMIN_PASSWORD` in `.env`.
 - The script installs the plugin from `tools/theme_designer_pro.py` if missing (the plugin file itself is not committed), enables it, and sets its valves to: Canvas FX off, Canvas API access off, community-theme catalogue off, URL import off. It then uploads the theme and verifies what users are served. `--check` verifies without changing anything.
 - Do not open the designer and press Save: that replaces the theme with the designer's own state. Re-run `branding.py` to restore it.
@@ -158,3 +159,20 @@ Limits: files over 8 MiB are refused with a clear message (the gateway's inline 
 python3 Michael/bootstrap/branding.py --init-assets --font /path/to/archivo-latin.woff2
 python3 Michael/bootstrap/branding.py
 ```
+
+### Verify the render, and roll back a stuck UI
+
+```bash
+npm i --prefix Michael/runtime/pw playwright-core      # once; needs a Chromium (CHROME_PATH, or ~/.cache/ms-playwright)
+python3 Michael/bootstrap/branding.py --verify-render   # login page and signed-in hard reload, dark and light
+```
+
+`--verify-render` (`tests/verify_render.mjs`) fails unless the login form (logged out) or the chat input (signed in) becomes visible and the splash is removed, within `TIMEOUT_MS` (20 s; it also fails if rendering takes more than half of that). Set `SHOTS=dir` to save screenshots. Run it against a throwaway stack after every theme change, **before** applying to the live stack, and again after.
+
+If the UI is stuck on the splash, switch the theme off in one step (needs the admin credentials in `.env`), then hard-reload the browser (Ctrl+Shift+R):
+
+```bash
+python3 Michael/bootstrap/branding.py --rollback
+```
+
+This toggles the plugin off through the admin API, so `/static/custom.css` serves 0 bytes. Re-run `branding.py` to re-apply.
