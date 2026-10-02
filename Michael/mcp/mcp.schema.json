@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mcp.schema.json",
+  "title": "Michael external tool server inventory",
+  "description": "Schema of Michael/mcp/mcp.json, read by bootstrap/mcp_servers.py. See docs/ExternalToolServers.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "servers"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": 1 },
+    "servers": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/server" }
+    }
+  },
+  "$defs": {
+    "variableName": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]*$"
+    },
+    "envVar": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "required", "secret", "description"],
+      "properties": {
+        "name": { "$ref": "#/$defs/variableName" },
+        "required": { "type": "boolean", "description": "Fail when the variable is unset and has no default." },
+        "secret": { "type": "boolean", "description": "Never printed or logged; never allowed a default." },
+        "description": { "type": "string", "minLength": 1 },
+        "default": { "type": "string", "description": "Used when the variable is unset or empty. Public-safe values only." }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["none", "bearer"] },
+        "key_env": { "$ref": "#/$defs/variableName", "description": "Name of the variable holding the bearer key; it must be declared in env." },
+        "optional": { "type": "boolean", "description": "Bearer only: when the key variable is empty, register the server with no authentication instead of failing." }
+      },
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "bearer" } } }, "then": { "required": ["key_env"] } },
+        { "if": { "properties": { "type": { "const": "none" } } }, "then": { "not": { "anyOf": [{ "required": ["key_env"] }, { "required": ["optional"] }] } } }
+      ]
+    },
+    "access": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["public", "admin", "groups"] },
+        "groups": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Open WebUI group names (resolved to ids when provisioning). Required for type groups."
+        }
+      },
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "groups" } } }, "then": { "required": ["groups"] } },
+        { "if": { "properties": { "type": { "enum": ["public", "admin"] } } }, "then": { "not": { "required": ["groups"] } } }
+      ]
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "description", "type", "transport", "url", "env", "auth", "access", "enabled", "tools"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "description": "Stable key. Becomes server:mcp:<id> (openapi: server:<id>) and prefixes the tool names the model sees."
+        },
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "type": { "enum": ["mcp", "openapi"] },
+        "transport": { "enum": ["streamable-http", "openapi-http"], "description": "streamable-http for type mcp, openapi-http for type openapi." },
+        "url": { "type": "string", "minLength": 1, "description": "http(s) URL as reachable from the Open WebUI container; may contain ${VARIABLE} references declared in env." },
+        "spec_path": { "type": "string", "minLength": 1, "description": "openapi only: path or full URL of the OpenAPI document (default openapi.json)." },
+        "env": { "type": "array", "items": { "$ref": "#/$defs/envVar" } },
+        "auth": { "$ref": "#/$defs/auth" },
+        "access": { "$ref": "#/$defs/access" },
+        "enabled": { "type": "boolean" },
+        "tools": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Tool names the server must list; checked by the verify step."
+        },
+        "function_name_filter_list": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Open WebUI exposure filter. Entries match as name SUFFIXES; a leading ! blocks. Omit to expose every tool."
+        }
+      },
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "mcp" } } }, "then": { "properties": { "transport": { "const": "streamable-http" } }, "not": { "required": ["spec_path"] } } },
+        { "if": { "properties": { "type": { "const": "openapi" } } }, "then": { "properties": { "transport": { "const": "openapi-http" } } } }
+      ]
+    }
+  }
+}

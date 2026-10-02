@@ -8,12 +8,15 @@ database or the data volume directly):
      valves (gateway URL and the shared translator API key; stored encrypted at
      rest when the server runs with ENABLE_VALVE_ENCRYPTION=true, which
      docker-compose.yaml sets), and a public read grant so every user can use it;
-  2. the translator gateway as a native MCP tool server (bearer auth, shared
-     key), exposing only the read-only helpers (capabilities, status, cancel);
-  3. a "Document Translator" model preset: file context off, native function
+  2. a "Document Translator" model preset: file context off, native function
      calling, built-in file tools off, both tools attached, public read access,
      and the base model registered with a public read grant (a non-admin user
      cannot use a preset whose base model has no registered row).
+
+The translator gateway MCP tool server itself (the `doctranslator` connection the
+preset attaches) is registered by mcp_servers.py from mcp/mcp.json, which is the single
+owner of tool server registration. Run either script first: the preset only names the
+connection, and this script reports whether it is registered yet.
 
 Reuses the helpers of davy_connection.py. Standard library only. Secrets are
 never printed: only fixed status text is written to the terminal. Settings come
@@ -28,8 +31,7 @@ from davy_connection import MICHAEL_DIR, ApiError, call, get_token, load_env
 
 TOOL_ID = 'document_translator'
 TOOL_FILE = MICHAEL_DIR / 'tools' / 'document_translator.py'
-MCP_CONN_ID = 'doctranslator'
-MCP_EXPOSED_TOOLS = ['translation_capabilities', 'get_translation_status', 'cancel_translation']
+MCP_CONN_ID = 'doctranslator'  # registered by mcp_servers.py (mcp/mcp.json); the preset attaches it
 MODEL_ID = 'document-translator'
 MODEL_NAME = 'Document Translator'
 PUBLIC_READ = [{'principal_type': 'user', 'principal_id': '*', 'permission': 'read'}]
@@ -109,45 +111,10 @@ def upsert_tool(base, token, cfg):
     return changed, valves_changed
 
 
-def upsert_mcp_connection(base, token, cfg):
-    """Add/update the gateway connection by info.id; leave other connections alone. Returns (connection, changed)."""
+def mcp_connection_registered(base, token):
+    """True when the gateway connection exists (registering it is mcp_servers.py's job)."""
     res = call(base, 'GET', '/api/v1/configs/tool_servers', token) or {}
-    conns = list(res.get('TOOL_SERVER_CONNECTIONS') or [])
-    want = {
-        'type': 'mcp',
-        'url': cfg['url'],
-        'path': '',
-        'auth_type': 'bearer',
-        'key': cfg['key'],
-        'headers': None,
-        'config': {
-            'enable': True,
-            'function_name_filter_list': ','.join(MCP_EXPOSED_TOOLS),
-            'access_grants': PUBLIC_READ,
-        },
-        'info': {
-            'id': MCP_CONN_ID,
-            'name': 'Document Translator gateway',
-            'description': 'Translator status, cancel and capabilities. Translation itself runs through the Document Translator tool.',
-        },
-    }
-    idx = next((i for i, c in enumerate(conns) if (c.get('info') or {}).get('id') == MCP_CONN_ID), None)
-    if idx is None:
-        conns.append(want)
-        changed = True
-    else:
-        merged = {**conns[idx], **want, 'config': {**(conns[idx].get('config') or {}), **want['config']}}
-        changed = merged != conns[idx]
-        conns[idx] = merged
-    if changed:
-        call(base, 'POST', '/api/v1/configs/tool_servers', token, {'TOOL_SERVER_CONNECTIONS': conns})
-    return want, changed
-
-
-def verify_mcp(base, token, conn):
-    res = call(base, 'POST', '/api/v1/configs/tool_servers/verify', token, conn)
-    names = {s.get('name') for s in (res or {}).get('specs') or []}
-    return sorted(set(MCP_EXPOSED_TOOLS) - names)
+    return any((c.get('info') or {}).get('id') == MCP_CONN_ID for c in res.get('TOOL_SERVER_CONNECTIONS') or [])
 
 
 def grants_of(model):
@@ -256,24 +223,10 @@ def main():
         report(True, 'workspace tool ' + ('created/updated' if tool_changed else 'already up to date'))
         report(True, 'tool valves ' + ('updated' if valves_changed else 'already up to date'))
 
-        conn, changed = upsert_mcp_connection(base, token, cfg)
-        report(True, 'MCP tool server ' + ('added/updated' if changed else 'already up to date'))
-        try:
-            missing = verify_mcp(base, token, conn)
-            report(
-                not missing,
-                'MCP tool server verifies and lists '
-                + (
-                    'all expected tools'
-                    if not missing
-                    else f'no {len(missing)} expected tool(s): ' + ', '.join(missing)
-                ),
-            )
-        except ApiError as e:
-            report(
-                False,
-                f'MCP tool server verification failed: {e} (check the gateway URL is reachable from the Open WebUI container, and the key)',
-            )
+        if mcp_connection_registered(base, token):
+            report(True, f'MCP tool server "{MCP_CONN_ID}" is registered (managed by mcp_servers.py)')
+        else:
+            print(f'[NOTE] MCP tool server "{MCP_CONN_ID}" is not registered yet: run bootstrap/mcp_servers.py (the preset attaches it)')
 
         base_changed = register_base_model(base, token, cfg['base_model'])
         report(

@@ -5,3 +5,7 @@ runtime/*
 !runtime/.gitkeep
 __pycache__/
 *.pyc
+
+# Local checkout of the employee-directory source used as the compose build context.
+services/*
+!services/.gitkeep

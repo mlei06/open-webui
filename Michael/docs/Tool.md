@@ -145,7 +145,7 @@ curl -sS -X POST "$OWUI/api/v1/configs/tool_servers/verify" \
   -d '{"type":"mcp","url":"<mcp url>","path":"","auth_type":"bearer","key":"<key>","config":{"enable":true},"info":{"id":"example","name":"Example"}}'
 ```
 
-A failure usually means the URL is unreachable from the container, the key is wrong, or the server rejects the Host header. `Michael/mcp/mcp.json` is an empty project inventory (no loader exists yet); it does not register anything.
+A failure usually means the URL is unreachable from the container, the key is wrong, or the server rejects the Host header. Our own servers are declared in `Michael/mcp/mcp.json` and registered by `Michael/bootstrap/mcp_servers.py`; see [ExternalToolServers.md](ExternalToolServers.md) for how external tool servers work in this fork, the `mcp.json` reference and the employee directory server.
 
 ## 6. Tools we use: Document Translator
 
@@ -177,7 +177,7 @@ File bytes are never part of any model request.
 
 ### The native MCP connection
 
-The same gateway is registered as an MCP tool server (id `doctranslator`, name "Document Translator gateway", bearer auth, the same shared key, public read grant). Only three tools are exposed through `function_name_filter_list`:
+The same gateway is registered as an MCP tool server by `Michael/bootstrap/mcp_servers.py` from `Michael/mcp/mcp.json` (see [ExternalToolServers.md](ExternalToolServers.md); id `doctranslator`, name "Document Translator gateway", bearer auth, the same shared key, public read grant). Only three tools are exposed through `function_name_filter_list`:
 
 - `translation_capabilities`
 - `get_translation_status`
@@ -187,13 +187,14 @@ The gateway's base64-carrying tools are filtered out on purpose, so the model ca
 
 ### Provisioning and the preset
 
-Script: `Michael/bootstrap/translator_tool.py`. Settings in `Michael/.env` (placeholders in `.env.example`): `TRANSLATOR_GATEWAY_URL` (reachable from the container, for example `http://host.docker.internal:8766/mcp`), `TRANSLATOR_API_KEY`, `TRANSLATOR_BASE_MODEL` (a model id listed by Open WebUI), optional `TRANSLATOR_ID`, plus the admin credentials.
+Scripts: `Michael/bootstrap/mcp_servers.py` registers the MCP connection; `Michael/bootstrap/translator_tool.py` creates the tool, its valves and the preset. Settings in `Michael/.env` (placeholders in `.env.example`): `TRANSLATOR_GATEWAY_URL` (reachable from the container, for example `http://host.docker.internal:8766/mcp`), `TRANSLATOR_API_KEY`, `TRANSLATOR_BASE_MODEL` (a model id listed by Open WebUI), optional `TRANSLATOR_ID`, plus the admin credentials.
 
 ```
+python3 Michael/bootstrap/mcp_servers.py
 python3 Michael/bootstrap/translator_tool.py
 ```
 
-Through the admin API it: creates or updates the workspace tool and its valves with a public read grant; adds or updates the MCP connection (matched by `info.id`, other connections kept) and verifies it lists the three tools; registers the base model with a public read grant; and creates or updates the preset below. It prints PASS or FAIL per step, prints no secrets, and a re-run changes nothing.
+Either order works: `mcp_servers.py` is the only script that registers the MCP connection (matched by `info.id`, other connections kept, verified to list the three tools), and `translator_tool.py` prints a `[NOTE]` if the connection is not there yet. Through the admin API `translator_tool.py` creates or updates the workspace tool and its valves with a public read grant; registers the base model with a public read grant; and creates or updates the preset below. Both scripts print PASS or FAIL per step, print no secrets, and a re-run changes nothing.
 
 **Preset "Document Translator"** (id `document-translator`): based on `TRANSLATOR_BASE_MODEL`; file context off (the model sees only the attachment id, not the text); function calling `native`; built-in files, knowledge, time and user-input tools off; tools attached: `server:mcp:doctranslator` and `document_translator`; public read access; and a system prompt telling it to call `translate_attachment` (leaving out `file_id` when one file is attached), never read or re-type the document, and give the download link exactly as returned. The User Context filter ([Filter.md](Filter.md)) also applies to this preset.
 
@@ -214,7 +215,7 @@ Treat them as instance-local. If one of them should be reproducible, export its 
 **Verified from this repository** (read at the time of writing):
 
 - API routes and fields in sections 4.2 and 5: `backend/open_webui/routers/tools.py`, `backend/open_webui/routers/configs.py`, `backend/open_webui/models/tools.py`.
-- Section 6: `Michael/tools/document_translator.py` (version 0.2.0, the rewrite on `main`), `Michael/bootstrap/translator_tool.py`, `Michael/docker-compose.yaml`, `Michael/README.md`, and `backend/open_webui/utils/valves.py` for valve encryption. Nothing was run against a live gateway.
+- Section 6: `Michael/tools/document_translator.py` (version 0.2.0, the rewrite on `main`), `Michael/bootstrap/translator_tool.py`, `Michael/bootstrap/mcp_servers.py`, `Michael/docker-compose.yaml`, `Michael/README.md`, and `backend/open_webui/utils/valves.py` for valve encryption. Nothing was run against a live gateway.
 - The names in section 7 are as given by the instance owner; the instance was not inspected.
 
 **Taken from the official documentation** (<https://docs.openwebui.com/features/extensibility/plugin/> and the pages under it), not re-tested here:

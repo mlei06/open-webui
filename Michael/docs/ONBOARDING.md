@@ -52,7 +52,7 @@ Proposed files:
 ```
 Michael/
   docs/                      # internal design and operating documentation
-  mcp/mcp.json               # project-owned MCP inventory, not auto-imported
+  mcp/mcp.json               # project-owned MCP inventory, registered by bootstrap/mcp_servers.py (see ExternalToolServers.md)
   models/                    # managed model/agent preset definitions
   services/                  # local service build contexts
   docker-compose.yaml

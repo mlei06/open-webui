@@ -1,4 +1,89 @@
 {
+  "$schema": "./mcp.schema.json",
   "schemaVersion": 1,
-  "servers": []
+  "servers": [
+    {
+      "id": "doctranslator",
+      "name": "Document Translator gateway",
+      "description": "Translator status, cancel and capabilities. Translation itself runs through the Document Translator tool.",
+      "type": "mcp",
+      "transport": "streamable-http",
+      "url": "${TRANSLATOR_GATEWAY_URL}",
+      "env": [
+        {
+          "name": "TRANSLATOR_GATEWAY_URL",
+          "required": true,
+          "secret": false,
+          "description": "Gateway /mcp URL as reachable from the Open WebUI container, for example http://host.docker.internal:8766/mcp."
+        },
+        {
+          "name": "TRANSLATOR_API_KEY",
+          "required": true,
+          "secret": true,
+          "description": "Shared translator API key, sent as the bearer token. One key for every Open WebUI user."
+        }
+      ],
+      "auth": { "type": "bearer", "key_env": "TRANSLATOR_API_KEY" },
+      "access": { "type": "public" },
+      "enabled": true,
+      "tools": ["translation_capabilities", "get_translation_status", "cancel_translation"],
+      "function_name_filter_list": ["translation_capabilities", "get_translation_status", "cancel_translation"]
+    },
+    {
+      "id": "employee_directory",
+      "name": "Employee directory",
+      "description": "Look up employees by name, nickname or id: email, position, manager, direct reports, management chain. Read only.",
+      "type": "mcp",
+      "transport": "streamable-http",
+      "url": "${EMPLOYEE_DIRECTORY_MCP_URL}",
+      "env": [
+        {
+          "name": "EMPLOYEE_DIRECTORY_MCP_URL",
+          "required": false,
+          "secret": false,
+          "description": "Directory MCP endpoint as reachable from the Open WebUI container.",
+          "default": "http://employee-directory:8000/mcp"
+        },
+        {
+          "name": "EMPLOYEE_MCP_API_KEY",
+          "required": false,
+          "secret": true,
+          "description": "Optional bearer key. Set it in .env and the directory then requires it on /mcp; leave it empty for no authentication."
+        }
+      ],
+      "auth": { "type": "bearer", "key_env": "EMPLOYEE_MCP_API_KEY", "optional": true },
+      "access": { "type": "public" },
+      "enabled": true,
+      "tools": ["search_employees", "get_employee", "get_direct_reports", "get_management_chain"],
+      "function_name_filter_list": ["search_employees", "get_employee", "get_direct_reports", "get_management_chain"]
+    },
+    {
+      "id": "employee_directory_write",
+      "name": "Employee directory (write)",
+      "description": "Create, update and soft-delete employees. Admin only. Needs the write instance of the directory (compose profile write) and its own key.",
+      "type": "mcp",
+      "transport": "streamable-http",
+      "url": "${EMPLOYEE_WRITE_MCP_URL}",
+      "env": [
+        {
+          "name": "EMPLOYEE_WRITE_MCP_URL",
+          "required": false,
+          "secret": false,
+          "description": "MCP endpoint of the write instance, as reachable from the Open WebUI container.",
+          "default": "http://employee-directory-write:8000/mcp"
+        },
+        {
+          "name": "EMPLOYEE_WRITE_MCP_API_KEY",
+          "required": true,
+          "secret": true,
+          "description": "Bearer key of the write instance. The write instance refuses to start without it."
+        }
+      ],
+      "auth": { "type": "bearer", "key_env": "EMPLOYEE_WRITE_MCP_API_KEY" },
+      "access": { "type": "admin" },
+      "enabled": false,
+      "tools": ["search_employees", "get_employee", "create_employee", "update_employee", "delete_employee"],
+      "function_name_filter_list": ["search_employees", "get_employee", "create_employee", "update_employee", "delete_employee"]
+    }
+  ]
 }

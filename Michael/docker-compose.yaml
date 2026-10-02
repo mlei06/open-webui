@@ -27,8 +27,62 @@ services:
       - host.docker.internal:host-gateway
     restart: unless-stopped
 
+  # Employee directory (REST API, UI and MCP server), built from its own source tree.
+  # Open WebUI reaches the MCP endpoint at http://employee-directory:8000/mcp over the
+  # default network of this project. SECURITY: the UI and REST API have no sign-in, so
+  # the port is published on loopback only. The real data lives in a named volume;
+  # seed it at run time with bootstrap/seed_employees.py (never bake data into the image).
+  employee-directory:
+    build:
+      # A checkout (or symlink) of the employee-directory repository. Set in .env.
+      context: ${EMPLOYEE_DIRECTORY_SRC:-./services/employee-directory}
+    image: ${EMPLOYEE_DIRECTORY_IMAGE:-michael-employee-directory:local}
+    environment:
+      EMPLOYEE_ADMIN_TOKEN: ${EMPLOYEE_ADMIN_TOKEN:-}              # unset = permanent delete and import disabled
+      EMPLOYEE_MCP_WRITE_TOOLS: ${EMPLOYEE_MCP_WRITE_TOOLS:-}      # empty = read-only MCP; e.g. create,update,delete
+      EMPLOYEE_MCP_API_KEY: ${EMPLOYEE_MCP_API_KEY:-}              # optional bearer key for /mcp
+    ports:
+      - 127.0.0.1:${EMPLOYEE_DIRECTORY_PORT:-8780}:8000
+    volumes:
+      - employee-directory-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2)"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Optional write instance: the same image and data volume with the MCP write tools on, behind
+  # its own bearer key, no published port. Start it with `--profile write`; register it with
+  # the (disabled by default) employee_directory_write entry of mcp/mcp.json.
+  employee-directory-write:
+    profiles: [write]
+    image: ${EMPLOYEE_DIRECTORY_IMAGE:-michael-employee-directory:local}
+    depends_on:
+      employee-directory:
+        condition: service_healthy
+    environment:
+      EMPLOYEE_MCP_WRITE_TOOLS: ${EMPLOYEE_WRITE_MCP_TOOLS:-create,update,delete}
+      EMPLOYEE_MCP_API_KEY: ${EMPLOYEE_WRITE_MCP_API_KEY:-}
+      EMPLOYEE_AUTO_MIGRATE: "false"                               # the read instance migrates the shared database
+    command:
+      - sh
+      - -c
+      - '[ -n "$$EMPLOYEE_MCP_API_KEY" ] || { echo "EMPLOYEE_WRITE_MCP_API_KEY is required" >&2; exit 1; }; exec python -m employee_directory serve'
+    volumes:
+      - employee-directory-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2)"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
 # Reuse the data volume of the original stack so existing chats carry over.
 volumes:
+  employee-directory-data:
   open-webui:
     external: true
     name: ${OPEN_WEBUI_VOLUME:-open-webui_open-webui}
