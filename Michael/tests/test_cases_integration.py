@@ -26,7 +26,7 @@ class GuardTests(unittest.TestCase):
 
     def test_plain_gemma_allowed(self):
         case_safety.validate_env(self.ENV)
-        with mock.patch.object(case_safety, 'call', return_value={'OPENAI_API_BASE_URLS': [self.ENV['OPENAI_API_BASE_URLS']]}) as api:
+        with mock.patch.object(case_safety, 'call', return_value={'OPENAI_API_BASE_URLS': [self.ENV['OPENAI_API_BASE_URLS']], 'OPENAI_API_KEYS': ['synthetic-davy-key']}) as api:
             case_safety.validate_live('http://test', 'not-a-real-token', self.ENV)
             self.assertEqual(api.call_count, 1)
 
@@ -41,12 +41,66 @@ class GuardTests(unittest.TestCase):
                 case_safety.validate_env({**self.ENV, **extra}, override)
             self.assertNotIn(secret, str(err.exception))
 
-    def test_stale_saved_outside_connection_denied_even_without_env_key(self):
-        with mock.patch.object(case_safety, 'call', return_value={'OPENAI_API_BASE_URLS': ['https://api.x.ai/v1']}):
-            with self.assertRaisesRegex(case_safety.ApiError, 'saved non-Davy'):
-                case_safety.validate_live('http://test', 'token', self.ENV)
+    def saved_connections(self):
+        return {
+            'OPENAI_API_BASE_URLS': ['https://api.openai.com/v1', self.ENV['OPENAI_API_BASE_URLS'], 'https://api.x.ai/v1'],
+            'OPENAI_API_KEYS': ['', 'synthetic-davy-key', 'synthetic-outside-key'],
+            'OPENAI_API_CONFIGS': {'1': {'enable': True}, '2': {'enable': False}},
+        }
+
+    def test_live_shape_with_keyless_and_disabled_outside_connections_allowed(self):
+        with mock.patch.object(case_safety, 'call', return_value=self.saved_connections()) as api:
+            case_safety.validate_live('http://test', 'token', self.ENV)
+            api.assert_called_once_with('http://test', 'GET', '/openai/config', 'token')
+
+    def test_outside_connection_requires_disabled_or_keyless(self):
+        for config, key, allowed in [
+            ({'enable': True}, 'synthetic-secret-key', False),
+            ({'enable': False}, 'synthetic-secret-key', True),
+            ({'enable': True}, '', True),
+            (None, 'synthetic-secret-key', False),
+            ({}, 'synthetic-secret-key', False),
+            ({'enable': 0}, 'synthetic-secret-key', False),
+        ]:
+            cfg = self.saved_connections()
+            cfg['OPENAI_API_BASE_URLS'][2] = 'https://synthetic-user:synthetic-password@outside.example.invalid/v1'
+            cfg['OPENAI_API_KEYS'][2] = key
+            if config is None:
+                del cfg['OPENAI_API_CONFIGS']['2']
+            else:
+                cfg['OPENAI_API_CONFIGS']['2'] = config
+            with self.subTest(config=config, key=key), mock.patch.object(case_safety, 'call', return_value=cfg):
+                if allowed:
+                    case_safety.validate_live('http://test', 'token', self.ENV)
+                else:
+                    with self.assertRaisesRegex(case_safety.ApiError, 'saved non-Davy') as err:
+                        case_safety.validate_live('http://test', 'token', self.ENV)
+                    for secret in ('synthetic-secret-key', 'synthetic-user', 'synthetic-password', 'outside.example.invalid'):
+                        self.assertNotIn(secret, str(err.exception))
+
+    def test_missing_approved_endpoint_refused(self):
+        for urls, keys in [([], []), (['https://outside.example.invalid/v1'], [''])]:
+            with self.subTest(urls=urls), mock.patch.object(case_safety, 'call', return_value={
+                    'OPENAI_API_BASE_URLS': urls, 'OPENAI_API_KEYS': keys, 'OPENAI_API_CONFIGS': {}}):
+                with self.assertRaisesRegex(case_safety.ApiError, 'approved Davy endpoint is missing'):
+                    case_safety.validate_live('http://test', 'token', self.ENV)
         with self.assertRaisesRegex(case_safety.ApiError, 'approved Davy'):
             case_safety.validate_live('http://test', 'token', {})
+
+    def test_misaligned_saved_connections_refused(self):
+        for extra in [
+            {'OPENAI_API_KEYS': ['synthetic-key']},
+            {'OPENAI_API_KEYS': ['', 'synthetic-key', '', 'extra-key']},
+            {'OPENAI_API_CONFIGS': {'3': {'enable': False}}},
+            {'OPENAI_API_CONFIGS': {'outside': {'enable': False}}},
+            {'OPENAI_API_CONFIGS': [{'enable': False}]},
+            {'OPENAI_API_CONFIGS': {'2': None}},
+            {'OPENAI_API_BASE_URLS': ['', self.ENV['OPENAI_API_BASE_URLS'], 'https://outside.example.invalid/v1']},
+        ]:
+            with self.subTest(extra=extra), mock.patch.object(case_safety, 'call', return_value={**self.saved_connections(), **extra}):
+                with self.assertRaisesRegex(case_safety.ApiError, 'cannot be aligned') as err:
+                    case_safety.validate_live('http://test', 'token', self.ENV)
+                self.assertNotIn('synthetic-key', str(err.exception))
 
     def test_provision_and_standalone_presets_refuse_before_auth_or_write(self):
         env = {**self.ENV, 'XAI_API_KEY': 'synthetic-refused-value'}
