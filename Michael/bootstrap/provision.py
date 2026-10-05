@@ -60,6 +60,7 @@ import urllib.request
 from pathlib import Path
 
 import access
+import case_safety
 import init_env
 import smtp_check
 from davy_connection import MICHAEL_DIR, ApiError, call, load_env
@@ -73,7 +74,7 @@ STEPS = [
     ('accounts', 'Sign-up closed, default role user', 'accounts.py', False, ['--check']),
     ('davy', 'Davy model connection', 'davy_connection.py', True, None),
     ('xai', 'xAI model connection', 'xai_connection.py', False, None),
-    ('mcp', 'Tool servers (translator gateway, employee directory, mail)', 'mcp_servers.py', False, ['--check']),
+    ('mcp', 'Tool servers (translator gateway, employee directory, mail, cases)', 'mcp_servers.py', False, ['--check']),
     ('filter', 'User context filter', 'user_context.py', False, None),
     ('audit', 'Audit event function', 'audit_log.py', False, None),
     ('translator', 'Document Translator tool', 'translator_tool.py', False, None),
@@ -215,6 +216,7 @@ def main(argv=None):
     ap.add_argument('--init-env', action='store_true', help='only add the missing non-secret or generated keys (including WEBUI_SECRET_KEY) to .env, then stop (run before docker compose up)')
     ap.add_argument('--mail-src', help='with --init-env: the mail-service clone')
     ap.add_argument('--employee-src', help='with --init-env: the employee-directory clone')
+    ap.add_argument('--cases-src', help='with --init-env: the devqdts cases checkout')
     ap.add_argument('--check', action='store_true', help='change nothing; exit 1 if anything differs')
     ap.add_argument('--only', default='', help='comma-separated step names to run')
     ap.add_argument('--skip', default='', help='comma-separated step names to skip')
@@ -226,10 +228,15 @@ def main(argv=None):
     if args.env_file:
         os.environ['MICHAEL_ENV_FILE'] = args.env_file
     if args.init_env:
-        extra = [a for flag, v in (('--mail-src', args.mail_src), ('--employee-src', args.employee_src)) if v for a in (flag, v)]
+        extra = [a for flag, v in (('--mail-src', args.mail_src), ('--employee-src', args.employee_src), ('--cases-src', args.cases_src)) if v for a in (flag, v)]
         return init_env.run(extra + (['--env-file', args.env_file] if args.env_file else []) + (['--check'] if args.check else []))
 
     env = load_env()
+    try:
+        case_safety.validate_env(env)
+    except ApiError as e:
+        print(f'[FAIL] {e}\nRESULT: FAIL')
+        return 1
     base = base_url(env)
     only = {s for s in args.only.split(',') if s}
     skip = {s for s in args.skip.split(',') if s}
@@ -259,6 +266,7 @@ def main(argv=None):
     print('== Admin account')
     try:
         token, created = ensure_admin(env, base, args.check)
+        case_safety.validate_live(base, token, env)
         run.ok('first admin account created from OPEN_WEBUI_ADMIN_EMAIL (fresh volume)' if created else 'signed in as admin')
     except ApiError as e:
         run.fail('admin', str(e))

@@ -16,7 +16,7 @@
       "id": "lenny",
       "name": "Lenny",
       "icon": "lenny.svg",
-      "description": "All-in-one assistant: web search, document translation, employee directory, mail drafting, Lenovo-styled PowerPoint and Word files, and knowledge bases.",
+      "description": "All-in-one assistant: QDTS cases, web search, document translation, employee directory, mail drafting, Lenovo-styled PowerPoint and Word files, and knowledge bases.",
       "prompt": "lenny.md",
       "tools": [
         {"server": "doctranslator"},
@@ -25,7 +25,8 @@
         {"server": "mail"},
         {"tool": "generate_slide_pptx"},
         {"tool": "generate_docx_documents"},
-        {"tool": "knowledge_base_manager"}
+        {"tool": "knowledge_base_manager"},
+        {"server": "qdts"}
       ],
       "actions": ["mail_review"],
       "capabilities": {
@@ -44,6 +45,31 @@
       "builtin_tools": ["time", "user_input", "web_search", "files", "knowledge"],
       "default_features": ["web_search"],
       "params": {}
+    },
+    {
+      "id": "case-assistant",
+      "name": "Case Assistant",
+      "icon": "case-assistant.svg",
+      "description": "Finds and explains internal QDTS cases, owners, history and all notes. Read only; Davy Gemma only.",
+      "prompt": "case-assistant.md",
+      "tools": [{"server": "qdts"}],
+      "knowledge_bases": [],
+      "capabilities": {
+        "file_upload": false,
+        "file_context": false,
+        "web_search": false,
+        "image_generation": false,
+        "code_interpreter": false,
+        "terminal": false,
+        "memory": false,
+        "builtin_tools": true,
+        "citations": true,
+        "status_updates": true,
+        "usage": false
+      },
+      "builtin_tools": ["time", "user_input"],
+      "default_features": [],
+      "params": {"temperature": 0.2}
     },
     {
       "id": "document-translator",

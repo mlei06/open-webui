@@ -31,6 +31,7 @@ import sys
 from pathlib import Path
 
 from davy_connection import MICHAEL_DIR, ApiError, call, get_token, load_env
+import case_safety
 
 MCP_JSON = MICHAEL_DIR / 'mcp' / 'mcp.json'
 SCHEMA_JSON = MICHAEL_DIR / 'mcp' / 'mcp.schema.json'
@@ -304,6 +305,8 @@ def run(argv=None):
 
     try:
         servers = load_servers(args.config)
+        if any(s['id'] == 'qdts' and s['enabled'] for s in servers):
+            case_safety.validate_env(env)
         report(True, f'mcp.json is valid ({len(servers)} server(s) declared)')
         # Resolve everything first: a missing variable must fail before anything is sent.
         resolved, problems = {}, []
@@ -317,7 +320,7 @@ def run(argv=None):
                     print(f'[SKIP] {s["id"]}: disabled and its variables are not set')
         if problems:
             raise ConfigError('; '.join(problems))
-    except ConfigError as e:
+    except (ConfigError, ApiError) as e:
         print(f'[FAIL] {e}')
         print('RESULT: FAIL')
         return 1
@@ -325,6 +328,8 @@ def run(argv=None):
 
     try:
         token = get_token(env, base)
+        if any(s['id'] == 'qdts' and s['enabled'] for s in active):
+            case_safety.validate_live(base, token, env)
         report(True, f'authenticated as admin at {base}')
         gids = group_ids(base, token, active)
         wanted = [desired_connection(s, resolved[s['id']], gids) for s in active]

@@ -131,8 +131,47 @@ services:
       - host.docker.internal:host-gateway
     restart: unless-stopped
 
+  # Read-only derived case index; no source database or browser profile in this service.
+  # One UID owns both the private 0600 index and reader. No published host port.
+  qdts-cases:
+    build:
+      context: ${QDTS_CASES_SRC:-./services/devqdts}
+      dockerfile: Dockerfile.cases
+    image: ${QDTS_CASES_IMAGE:-michael-qdts-cases:local}
+    user: "10001:10001"
+    environment:
+      QDTS_API_KEY: ${QDTS_MCP_API_KEY:-}
+      QDTS_INDEX: /data/qdts_index.db
+      QDTS_ALLOWED_HOSTS: qdts-cases:8000,localhost:8000,127.0.0.1:8000
+    volumes:
+      - qdts-cases-data:/data:ro
+    restart: unless-stopped
+
+  # Run explicitly after an approved sync/backup, never on WebUI startup.
+  # Root only prepares the volume ownership; the index build itself runs as uid 10001.
+  qdts-indexer:
+    profiles: [index]
+    build:
+      context: ${QDTS_CASES_SRC:-./services/devqdts}
+      dockerfile: Dockerfile.cases
+    image: ${QDTS_CASES_IMAGE:-michael-qdts-cases:local}
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - 'chown 10001:10001 /data && exec su -s /bin/sh qdts -c "python -m qdts_cases.index --src /source/devqdts.db --out /data/qdts_index.db"'
+    volumes:
+      - qdts-cases-data:/data
+      - type: bind
+        source: ${QDTS_DEVQDTS_DATA:?Set QDTS_DEVQDTS_DATA to an approved normalized source folder}
+        target: /source
+        read_only: true
+        bind:
+          create_host_path: false
+    restart: "no"
+
 # Reuse the data volume of the original stack so existing chats carry over.
 volumes:
+  qdts-cases-data:
   employee-directory-data:
   mail-service-data:
   open-webui:

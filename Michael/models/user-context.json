@@ -9,6 +9,7 @@
     "nemotron-3-ultra": ["name", "id", "email"],
     "document-translator": ["name", "id", "email"],
     "lenny": ["name", "id", "email"],
+    "case-assistant": ["name", "id"],
     "web-searcher": ["name"],
     "office-agent": ["name", "id", "email"],
     "knowledge-base-manager": ["name"],

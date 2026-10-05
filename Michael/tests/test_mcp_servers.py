@@ -29,7 +29,7 @@ def write_doc(tmp, doc):
 
 class InventoryTests(unittest.TestCase):
     def test_shipped_inventory_is_valid(self):
-        self.assertEqual(set(BY_ID), {'doctranslator', 'employee_directory', 'mail', 'employee_directory_write'})
+        self.assertEqual(set(BY_ID), {'doctranslator', 'employee_directory', 'mail', 'qdts', 'employee_directory_write'})
         self.assertFalse(BY_ID['employee_directory_write']['enabled'])
         self.assertEqual(BY_ID['employee_directory_write']['access'], {'type': 'admin'})
 

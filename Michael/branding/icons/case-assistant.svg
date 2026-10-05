@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Case Assistant: case file and search</title>
+  <circle cx="32" cy="32" r="32" fill="#1E3A8A"/>
+  <circle cx="32" cy="32" r="30" fill="none" stroke="#93C5FD" stroke-width="1.5"/>
+  <g fill="none" stroke="#FFFFFF" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="15" y="14" width="26" height="36" rx="3"/>
+    <path d="M22 23 H34 M22 30 H30 M22 37 H27"/>
+    <circle cx="40" cy="39" r="8" fill="#1E3A8A"/>
+    <path d="M46 45 L52 51" stroke="#E1251B"/>
+  </g>
+</svg>

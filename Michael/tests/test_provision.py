@@ -73,7 +73,7 @@ class InitEnvTests(unittest.TestCase):
         self.assertNotIn('MAIL_SMTP_TLS_VERIFY', v)
 
     def test_never_overwrites_and_is_idempotent(self):
-        self.env.write_text(f'SMTP_HOST=h\nMAIL_PROVIDER=mock\nWEBUI_SECRET_KEY={SECRET}\nMAIL_MCP_API_KEY={SECRET}\nMAIL_SERVICE_SRC=/elsewhere\nMAIL_SMTP_TLS_VERIFY=true\nEMPLOYEE_DIRECTORY_SRC=/e\n')
+        self.env.write_text(f'SMTP_HOST=h\nMAIL_PROVIDER=mock\nWEBUI_SECRET_KEY={SECRET}\nMAIL_MCP_API_KEY={SECRET}\nMAIL_SERVICE_SRC=/elsewhere\nMAIL_SMTP_TLS_VERIFY=true\nEMPLOYEE_DIRECTORY_SRC=/e\nQDTS_CASES_SRC=/c\nQDTS_MCP_API_KEY={SECRET}\nQDTS_CUSTOMER_NAMES=plain\n')
         before = self.env.read_text()
         code, out = self.run_init()
         self.assertEqual(code, 0)

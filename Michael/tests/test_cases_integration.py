@@ -1,0 +1,128 @@
+"""Offline deployment safety/contracts. Run: python3 Michael/tests/test_cases_integration.py"""
+import contextlib
+import io
+import json
+import os
+import stat
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+HERE = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(HERE / 'bootstrap'))
+sys.path.insert(0, str(HERE / 'tests/fixtures'))
+import cases_model
+import case_safety
+import init_env
+import mcp_servers
+import presets
+import provision
+
+
+class GuardTests(unittest.TestCase):
+    ENV = {'OPENAI_API_BASE_URLS': 'https://davy.example.invalid/v1'}
+
+    def test_plain_gemma_allowed(self):
+        case_safety.validate_env(self.ENV)
+        with mock.patch.object(case_safety, 'call', return_value={'OPENAI_API_BASE_URLS': [self.ENV['OPENAI_API_BASE_URLS']]}) as api:
+            case_safety.validate_live('http://test', 'not-a-real-token', self.ENV)
+            self.assertEqual(api.call_count, 1)
+
+    def test_outside_key_models_alias_and_multiple_connections_denied_secret_free(self):
+        secret = 'synthetic-test-value-not-a-credential'
+        bad = [({'XAI_API_KEY': secret}, None), ({'PRESETS_BASE_MODEL': 'grok'}, None),
+               ({'TRANSLATOR_BASE_MODEL': 'grok'}, None), ({}, 'grok'),
+               ({'QDTS_CUSTOMER_NAMES': 'alias'}, None),
+               ({'OPENAI_API_BASE_URLS': 'https://davy.example.invalid/v1;https://outside.example.invalid/v1'}, None)]
+        for extra, override in bad:
+            with self.subTest(extra=extra), self.assertRaises(case_safety.ApiError) as err:
+                case_safety.validate_env({**self.ENV, **extra}, override)
+            self.assertNotIn(secret, str(err.exception))
+
+    def test_stale_saved_outside_connection_denied_even_without_env_key(self):
+        with mock.patch.object(case_safety, 'call', return_value={'OPENAI_API_BASE_URLS': ['https://api.x.ai/v1']}):
+            with self.assertRaisesRegex(case_safety.ApiError, 'saved non-Davy'):
+                case_safety.validate_live('http://test', 'token', self.ENV)
+        with self.assertRaisesRegex(case_safety.ApiError, 'approved Davy'):
+            case_safety.validate_live('http://test', 'token', {})
+
+    def test_provision_and_standalone_presets_refuse_before_auth_or_write(self):
+        env = {**self.ENV, 'XAI_API_KEY': 'synthetic-refused-value'}
+        for mod in (provision, presets, mcp_servers):
+            out = io.StringIO()
+            with self.subTest(script=mod.__name__), mock.patch.object(mod, 'load_env', return_value=env), contextlib.redirect_stdout(out):
+                # MCP env resolution happens after its guard, so no unrelated service keys needed.
+                self.assertEqual((mod.main if mod is provision else mod.run)([]), 1)
+            self.assertNotIn(env['XAI_API_KEY'], out.getvalue())
+            self.assertIn('Plain QDTS', out.getvalue())
+
+
+class DeclarationTests(unittest.TestCase):
+    def test_fixture_provider_tolerates_old_service_sort_schema(self):
+        for sorts in (['created_newest'], ['created_newest', 'closed_newest']):
+            response = cases_model.response({'messages': [
+                {'role': 'system', 'content': 'id: fixtureone untrusted closed_newest'},
+                {'role': 'user', 'content': 'TEST_CLOSED'}],
+                'tools': [{'function': {'name': 'qdts_search_cases', 'parameters': {
+                    'properties': {'sort': {'anyOf': [{'enum': sorts}]}}}}}]})
+            args = json.loads(response['tool_calls'][0]['function']['arguments'])
+            self.assertEqual(args['state'], 'closed')
+            self.assertEqual(args['closed_after'], '2026-01-01')
+            self.assertEqual(args.get('sort'), 'closed_newest' if 'closed_newest' in sorts else None)
+
+    def test_shared_bearer_no_identity_no_writes(self):
+        server = next(s for s in mcp_servers.load_servers() if s['id'] == 'qdts')
+        connection = mcp_servers.desired_connection(server, mcp_servers.resolve(server, {'QDTS_MCP_API_KEY': 'synthetic'}), {})
+        self.assertEqual(connection['url'], 'http://qdts-cases:8000/mcp')
+        self.assertEqual(connection['auth_type'], 'bearer')
+        self.assertIsNone(connection['headers'])
+        self.assertEqual(server['tools'], ['search_cases', 'get_case', 'get_case_notes'])
+        self.assertEqual(server['tools'], server['function_name_filter_list'])
+        self.assertEqual(server['access'], {'type': 'public'})
+
+    def test_case_tools_only_and_identity(self):
+        doc, rows = presets.load_presets()
+        by_id = {p['id']: p for p in rows}
+        for pid in ('lenny', 'case-assistant'):
+            model = presets.desired_model(by_id[pid], doc['base_model'], doc['filter_ids'])
+            self.assertIn('server:mcp:qdts', model['meta']['toolIds'])
+            text = by_id[pid]['system']
+            for word in ('person', 'Hold', 'Cancel', 'Verify', 'closed_after', 'closed_newest', 'get_case_notes', 'untrusted'):
+                self.assertIn(word, text)
+        ca = presets.desired_model(by_id['case-assistant'], doc['base_model'], doc['filter_ids'])
+        self.assertEqual(ca['meta']['toolIds'], ['server:mcp:qdts'])
+        self.assertEqual(by_id['case-assistant']['knowledge_bases'], [])
+        self.assertFalse(ca['meta']['capabilities']['web_search'])
+        self.assertFalse(ca['meta']['builtinTools']['knowledge'])
+        cfg = json.loads((HERE / 'models/user-context.json').read_text())
+        self.assertEqual(cfg['models']['case-assistant'], ['name', 'id'])
+        self.assertTrue(ca['meta']['profile_image_url'].startswith('data:image/png;base64,'))
+
+    def test_env_generation_private_idempotent_no_source_data_discovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / 'source'
+            (src / 'qdts_cases').mkdir(parents=True)
+            (src / 'Dockerfile.cases').write_text('FROM scratch\n')
+            path = Path(tmp) / '.env'
+            path.write_text('MAIL_SERVICE_SRC=/mail\nEMPLOYEE_DIRECTORY_SRC=/emp\nMAIL_PROVIDER=mock\nWEBUI_SECRET_KEY=synthetic\nMAIL_MCP_API_KEY=synthetic\n')
+            out = io.StringIO()
+            args = ['--env-file', str(path), '--cases-src', str(src)]
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(init_env.run(args), 0)
+                first = path.read_text()
+                self.assertEqual(init_env.run(args), 0)
+                self.assertEqual(path.read_text(), first)
+            env = {k: v[1] for k, v in init_env.parse(first.splitlines()).items()}
+            self.assertEqual(env['QDTS_CASES_SRC'], str(src))
+            self.assertEqual(env['QDTS_CUSTOMER_NAMES'], 'plain')
+            self.assertGreaterEqual(len(env['QDTS_MCP_API_KEY']), 32)
+            self.assertNotIn(env['QDTS_MCP_API_KEY'], out.getvalue())
+            self.assertNotIn('QDTS_DEVQDTS_DATA', env)
+            self.assertNotIn('QDTS_ALIAS_KEY', env)
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+
+
+if __name__ == '__main__':
+    unittest.main()

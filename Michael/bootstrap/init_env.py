@@ -14,6 +14,10 @@ The file is written with mode 600. What it manages:
   MAIL_SERVICE_SRC          the mail-service repository clone compose builds from. Taken from
                             --mail-src, else found next to the other projects (see find_source).
   EMPLOYEE_DIRECTORY_SRC    the same for the employee-directory clone (--employee-src).
+  QDTS_CASES_SRC            devqdts checkout with Dockerfile.cases (--cases-src).
+  QDTS_MCP_API_KEY          a generated shared bearer key, never overwritten.
+  QDTS_CUSTOMER_NAMES       plain (the service has no alias mode). No alias key is generated.
+                            QDTS_DEVQDTS_DATA is NOT discovered: the operator approves its location.
   MAIL_PROVIDER             smtp when SMTP_HOST is set (the owner's relay), otherwise mock.
   MAIL_SMTP_TLS_VERIFY      false when the provider is smtp (see the risk below), otherwise nothing.
   WEBUI_SECRET_KEY          a generated random key (48 random bytes, urlsafe) that Open WebUI signs sessions with and
@@ -113,7 +117,17 @@ def mail_source_supports_tls_verify(path):
         return False
 
 
-def plan(env, mail_src=None, employee_src=None):
+def find_cases_source(explicit=None):
+    """A devqdts checkout with the separate cases image (no source data is read)."""
+    candidates = [Path(explicit).expanduser()] if explicit else candidate_dirs('devqdts')
+    for path in candidates:
+        path = path.resolve()
+        if (path / 'Dockerfile.cases').is_file() and (path / 'qdts_cases').is_dir():
+            return path
+    return None
+
+
+def plan(env, mail_src=None, employee_src=None, cases_src=None):
     """What to add: a list of (key, value-or-callable, comment-or-None). `env` is the parsed {key: (i, value)}."""
     have = lambda k: bool((env.get(k) or (0, ''))[1].strip())  # noqa: E731
     notes, wanted = [], []
@@ -133,6 +147,19 @@ def plan(env, mail_src=None, employee_src=None):
             if key == 'MAIL_SERVICE_SRC' and not mail_source_supports_tls_verify(path):
                 notes.append('MAIL_SERVICE_SRC: this checkout has no MAIL_SMTP_TLS_VERIFY yet; update it before building (the relay certificate cannot be verified without it)')
             wanted.append((key, str(path), None))
+
+    if not have('QDTS_CASES_SRC'):
+        path = find_cases_source(cases_src)
+        if path:
+            wanted.append(('QDTS_CASES_SRC', str(path), None))
+        else:
+            notes.append('QDTS_CASES_SRC: no cases checkout found; pass --cases-src PATH')
+    elif cases_src and str(Path(cases_src).expanduser().resolve()) != env['QDTS_CASES_SRC'][1].strip():
+        notes.append('QDTS_CASES_SRC is already set; it is never overwritten (edit it by hand to change it)')
+    if not have('QDTS_MCP_API_KEY'):
+        wanted.append(('QDTS_MCP_API_KEY', lambda: secrets.token_urlsafe(32), None))
+    if not have('QDTS_CUSTOMER_NAMES'):
+        wanted.append(('QDTS_CUSTOMER_NAMES', 'plain', None))
 
     smtp = have('SMTP_HOST')
     if not have('MAIL_PROVIDER'):
@@ -188,6 +215,7 @@ def run(argv=None):
     ap.add_argument('--env-file', help='the private env file (default: $MICHAEL_ENV_FILE, else Michael/.env)')
     ap.add_argument('--mail-src', help='path of the mail-service repository clone (default: found next to the other projects)')
     ap.add_argument('--employee-src', help='path of the employee-directory repository clone')
+    ap.add_argument('--cases-src', help='path of the devqdts checkout with Dockerfile.cases')
     ap.add_argument('--check', action='store_true', help='change nothing; exit 1 when something would be added')
     args = ap.parse_args(argv)
 
@@ -203,7 +231,7 @@ def run(argv=None):
         print(f'[NOTE] created an empty {path.name}; supply the private values (see .env.example)')
     lines = path.read_text().splitlines()
     env = parse(lines)
-    wanted, notes = plan(env, args.mail_src, args.employee_src)
+    wanted, notes = plan(env, args.mail_src, args.employee_src, args.cases_src)
     for note in notes:
         print(f'[NOTE] {note}')
     if not wanted:

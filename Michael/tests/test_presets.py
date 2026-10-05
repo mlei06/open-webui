@@ -37,7 +37,7 @@ class DeclarationTests(unittest.TestCase):
     def test_presets_with_expected_ids(self):
         self.assertEqual(
             [x['id'] for x in PRESETS],
-            ['lenny', 'document-translator', 'web-searcher', 'office-agent', 'knowledge-base-manager', 'office-documents'],
+            ['lenny', 'case-assistant', 'document-translator', 'web-searcher', 'office-agent', 'knowledge-base-manager', 'office-documents'],
         )
 
     def test_default_base_model_is_gemma_not_grok(self):
@@ -53,7 +53,7 @@ class DeclarationTests(unittest.TestCase):
         self.assertEqual(
             set(ids['lenny']),
             {'server:mcp:doctranslator', 'document_translator', 'server:mcp:employee_directory', 'server:mcp:mail',
-             'generate_slide_pptx', 'generate_docx_documents', 'knowledge_base_manager'},  # Lenny has every tool
+             'generate_slide_pptx', 'generate_docx_documents', 'knowledge_base_manager', 'server:mcp:qdts'},  # Lenny has every tool
         )
 
     def test_lenny_prompt_routes_to_every_tool_it_has(self):
@@ -170,6 +170,9 @@ KB = {'id': 'kb-1', 'name': 'SOPs', 'description': 'seed'}
 class KnowledgeTests(unittest.TestCase):
     def test_every_preset_attaches_the_sops_base_by_default_and_turns_on_the_knowledge_tool(self):
         for k in BY_ID:
+            if k == 'case-assistant':
+                self.assertEqual(BY_ID[k]['knowledge_bases'], [])
+                continue  # explicitly case-tools-only
             self.assertEqual(BY_ID[k]['knowledge_bases'], ['SOPs'], k)
             w = p.desired_model(BY_ID[k], 'base-x', FILTERS, {'SOPs': KB})
             self.assertEqual(w['meta']['knowledge'], [{'id': 'kb-1', 'name': 'SOPs', 'type': 'collection', 'description': 'seed'}], k)
@@ -211,7 +214,7 @@ class ValidationTests(unittest.TestCase):
         d = copy.deepcopy(base); d['presets'][1]['id'] = 'lenny'; cases.append(d)
         d = copy.deepcopy(base); d['presets'][0]['tools'] = [{'server': 'a', 'tool': 'b'}]; cases.append(d)
         d = copy.deepcopy(base); d['presets'][0]['builtin_tools'] = ['nope']; cases.append(d)
-        d = copy.deepcopy(base); d['presets'][3]['default_features'] = ['web_search']; cases.append(d)
+        d = copy.deepcopy(base); d['presets'][4]['default_features'] = ['web_search']; cases.append(d)
         d = copy.deepcopy(base); d['presets'][0]['capabilities']['vision'] = 'yes'; cases.append(d)
         d = copy.deepcopy(base); d['base_model'] = ' '; cases.append(d)
         d = copy.deepcopy(base); d['presets'][0]['actions'] = ['nope']; cases.append(d)
@@ -252,7 +255,7 @@ class MatchTests(unittest.TestCase):
 
     def test_missing_refs_notes_unregistered_mail(self):
         tools = {'document_translator', 'knowledge_base_manager', 'generate_slide_pptx', 'generate_docx_documents'}
-        got = p.missing_refs(PRESETS, FILTERS, {'doctranslator', 'employee_directory'}, tools, {'user_context'})
+        got = p.missing_refs(PRESETS, FILTERS, {'doctranslator', 'employee_directory', 'qdts'}, tools, {'user_context'})
         self.assertEqual({(a, c, d) for a, _, c, d in got}, {('lenny', 'mail', False), ('office-agent', 'mail', False)})
         got = p.missing_refs(PRESETS, FILTERS, {'mail'}, set(), set())
         self.assertTrue(any(k == 'filter function' for _, k, _, _ in got))
