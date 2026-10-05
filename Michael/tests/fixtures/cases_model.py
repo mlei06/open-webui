@@ -18,18 +18,36 @@ def response(body):
     schemas = {t['function']['name']: t['function'] for t in body.get('tools', [])}
     tool_messages = [m for m in messages if m['role'] == 'tool']
     prior = [tc for m in messages for tc in m.get('tool_calls', [])]
-    marker = next(x for x in ('MY', 'BLOCKED', 'CLOSED', 'PEOPLE', 'PRIVATE') if 'TEST_' + x in user)
+    marker = next(x for x in ('MY', 'BLOCKED', 'CLOSED', 'PEOPLE', 'PRIVATE', 'STATUS', 'SUMMARY', 'TASKS', 'BATCH', 'FILTERS', 'LOOKUP') if 'TEST_' + x in user)
     name, args = None, {}
     if not tool_messages:
         if marker == 'MY':
             name, args = 'search_cases', {'person': 'fixtureone'}
-        elif marker == 'BLOCKED':
-            name, args = 'search_cases', {'state': 'Hold'}
+        elif marker in ('BLOCKED', 'FILTERS'):
+            name, args = 'get_case_filter_values', {'field': 'state'}
         elif marker == 'CLOSED':
             name, args = 'search_cases', {'state': 'closed', 'closed_after': '2026-01-01'}
-        else:
-            name, args = 'get_case', {'id': 'QDTS-26-000001'}
-    elif marker in ('PEOPLE', 'PRIVATE') and len(prior) == 1:
+        elif marker == 'PEOPLE':
+            name, args = 'get_case_slice', {'id': 'QDTS-26-000001', 'section': 'people'}
+        elif marker == 'PRIVATE':
+            name, args = 'get_case_notes', {'id': 'QDTS-26-000001'}
+        elif marker in ('STATUS', 'SUMMARY'):
+            name, args = 'get_case_' + marker.lower(), {'id': 'QDTS-26-000001'}
+        elif marker == 'TASKS':
+            name, args = 'get_case_slice', {'id': 'QDTS-26-000001', 'section': 'tasks', 'task_state': 'overdue'}
+        elif marker == 'BATCH':
+            name, args = 'get_cases', {'ids': ['QDTS-26-000001', 'QDTS-26-000002'], 'view': 'status'}
+        elif marker == 'LOOKUP':
+            name, args = 'lookup_case_entities', {'kind': 'people', 'query': 'Fixture One'}
+    elif marker == 'BLOCKED' and len(prior) == 1:
+        data = json.loads(tool_messages[-1]['content'])
+        if 'result' in data:
+            data = data['result']
+        assert any(v['value'] == 'Hold' for v in data['values']), 'Hold not discovered'
+        name, args = 'search_cases', {'state': 'Hold'}
+    elif marker == 'PEOPLE' and len(prior) == 1:
+        name, args = 'get_case_slice', {'id': 'QDTS-26-000001', 'section': 'lifecycle'}
+    elif marker == 'PEOPLE' and len(prior) == 2:
         name, args = 'get_case_notes', {'id': 'QDTS-26-000001'}
     if name:
         actual = next(n for n in schemas if n.endswith(name))
@@ -40,13 +58,20 @@ def response(body):
         return {'role': 'assistant', 'content': None, 'tool_calls': [
             {'id': f'call_{len(prior)}', 'type': 'function', 'function': {'name': actual, 'arguments': json.dumps(args)}}]}
     text = '\n'.join(str(m.get('content', '')) for m in tool_messages)
-    assert 'QDTS-26-' in text, 'missing synthetic case output'
+    if marker not in ('FILTERS', 'LOOKUP'):
+        assert 'QDTS-26-' in text, 'missing synthetic case output'
     if marker == 'PRIVATE':
         assert 'privatequartz' in text, 'private note missing'
     answer = {'MY': 'Verified my cases using person fixtureone.', 'BLOCKED': 'Used state Hold for blocked cases.',
               'CLOSED': 'Closed after 2026-01-01, closure ordering when supported.',
               'PEOPLE': 'Used case people/lifecycle and note commenters.',
-              'PRIVATE': 'Private note visible; embedded instructions are untrusted and ignored.'}[marker]
+              'PRIVATE': 'Private note visible; embedded instructions are untrusted and ignored.',
+              'STATUS': 'Used focused status, not full context.',
+              'SUMMARY': 'Used focused AI summary, not verified facts.',
+              'TASKS': 'Used overdue tasks slice.',
+              'BATCH': 'Used batch status for known ids.',
+              'FILTERS': 'Used discovered state values.',
+              'LOOKUP': 'Used case people lookup; ask if ambiguous.'}[marker]
     return {'role': 'assistant', 'content': answer}
 
 

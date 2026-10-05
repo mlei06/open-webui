@@ -33,6 +33,19 @@ class InventoryTests(unittest.TestCase):
         self.assertFalse(BY_ID['employee_directory_write']['enabled'])
         self.assertEqual(BY_ID['employee_directory_write']['access'], {'type': 'admin'})
 
+    def test_qdts_nine_read_only_tools_and_filter(self):
+        expected = ['search_cases', 'get_case', 'get_case_notes', 'get_case_summary',
+                    'get_case_status', 'get_case_slice', 'get_cases',
+                    'get_case_filter_values', 'lookup_case_entities']
+        self.assertEqual(BY_ID['qdts']['tools'], expected)
+        self.assertEqual(BY_ID['qdts']['function_name_filter_list'], expected)
+        connection = want('qdts', {'QDTS_MCP_API_KEY': 'synthetic'})
+        filters = connection['config']['function_name_filter_list'].split(',')
+        for name in expected:
+            self.assertTrue(m.name_allowed('qdts_' + name, filters))
+        for name in ('create_case', 'update_case', 'delete_case', 'send_mail'):
+            self.assertFalse(m.name_allowed('qdts_' + name, filters))
+
     def test_schema_rejects_bad_documents(self):
         import tempfile
 

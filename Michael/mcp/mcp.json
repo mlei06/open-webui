@@ -111,8 +111,8 @@
       "auth": { "type": "bearer", "key_env": "QDTS_MCP_API_KEY" },
       "access": { "type": "public" },
       "enabled": true,
-      "tools": ["search_cases", "get_case", "get_case_notes"],
-      "function_name_filter_list": ["search_cases", "get_case", "get_case_notes"]
+      "tools": ["search_cases", "get_case", "get_case_notes", "get_case_summary", "get_case_status", "get_case_slice", "get_cases", "get_case_filter_values", "lookup_case_entities"],
+      "function_name_filter_list": ["search_cases", "get_case", "get_case_notes", "get_case_summary", "get_case_status", "get_case_slice", "get_cases", "get_case_filter_values", "lookup_case_entities"]
     },
     {
       "id": "employee_directory_write",

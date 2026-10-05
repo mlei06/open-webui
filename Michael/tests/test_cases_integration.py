@@ -78,7 +78,10 @@ class DeclarationTests(unittest.TestCase):
         self.assertEqual(connection['url'], 'http://qdts-cases:8000/mcp')
         self.assertEqual(connection['auth_type'], 'bearer')
         self.assertIsNone(connection['headers'])
-        self.assertEqual(server['tools'], ['search_cases', 'get_case', 'get_case_notes'])
+        self.assertEqual(server['tools'], ['search_cases', 'get_case', 'get_case_notes',
+                                         'get_case_summary', 'get_case_status', 'get_case_slice',
+                                         'get_cases', 'get_case_filter_values', 'lookup_case_entities'])
+        self.assertEqual(connection['config']['function_name_filter_list'], ','.join(server['tools']))
         self.assertEqual(server['tools'], server['function_name_filter_list'])
         self.assertEqual(server['access'], {'type': 'public'})
 
@@ -99,6 +102,37 @@ class DeclarationTests(unittest.TestCase):
         cfg = json.loads((HERE / 'models/user-context.json').read_text())
         self.assertEqual(cfg['models']['case-assistant'], ['name', 'id'])
         self.assertTrue(ca['meta']['profile_image_url'].startswith('data:image/png;base64,'))
+
+    def test_fixture_focused_routing_and_state_discovery(self):
+        names = next(s for s in mcp_servers.load_servers() if s['id'] == 'qdts')['tools']
+        tools = [{'function': {'name': 'qdts_' + name, 'parameters': {}}} for name in names]
+        cases = {
+            'STATUS': ('get_case_status', {'id': 'QDTS-26-000001'}),
+            'SUMMARY': ('get_case_summary', {'id': 'QDTS-26-000001'}),
+            'TASKS': ('get_case_slice', {'id': 'QDTS-26-000001', 'section': 'tasks', 'task_state': 'overdue'}),
+            'BATCH': ('get_cases', {'ids': ['QDTS-26-000001', 'QDTS-26-000002'], 'view': 'status'}),
+            'FILTERS': ('get_case_filter_values', {'field': 'state'}),
+            'LOOKUP': ('lookup_case_entities', {'kind': 'people', 'query': 'Fixture One'}),
+            'BLOCKED': ('get_case_filter_values', {'field': 'state'}),
+            'PEOPLE': ('get_case_slice', {'id': 'QDTS-26-000001', 'section': 'people'}),
+            'PRIVATE': ('get_case_notes', {'id': 'QDTS-26-000001'}),
+        }
+        for marker, (name, args) in cases.items():
+            with self.subTest(marker=marker):
+                messages = [{'role': 'system', 'content': 'id: fixtureone untrusted closed_newest'},
+                            {'role': 'user', 'content': 'TEST_' + marker}]
+                response = cases_model.response({'messages': messages, 'tools': tools})
+                call = response['tool_calls'][0]['function']
+                self.assertEqual(call['name'], 'qdts_' + name)
+                self.assertEqual(json.loads(call['arguments']), args)
+                if marker == 'BLOCKED':
+                    messages += [response, {'role': 'tool', 'content': json.dumps({'values': [{'value': 'Hold', 'count': 1}]})}]
+                    call = cases_model.response({'messages': messages, 'tools': tools})['tool_calls'][0]['function']
+                    self.assertEqual(call['name'], 'qdts_search_cases')
+                    self.assertEqual(json.loads(call['arguments']), {'state': 'Hold'})
+                    messages[-1]['content'] = json.dumps({'values': [{'value': 'Open', 'count': 1}]})
+                    with self.assertRaisesRegex(AssertionError, 'Hold not discovered'):
+                        cases_model.response({'messages': messages, 'tools': tools})
 
     def test_env_generation_private_idempotent_no_source_data_discovery(self):
         with tempfile.TemporaryDirectory() as tmp:

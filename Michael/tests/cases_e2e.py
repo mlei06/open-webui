@@ -59,8 +59,20 @@ async def main():
         async with ClientSession(r, w) as session:
             await session.initialize()
             tools = (await session.list_tools()).tools
-            assert {'search_cases','get_case','get_case_notes'} <= {t.name for t in tools}
-            # Extra tools in newer backward-compatible services are intentionally ignored.
+            assert {'search_cases','get_case','get_case_notes','get_case_summary',
+                    'get_case_status','get_case_slice','get_cases','get_case_filter_values',
+                    'lookup_case_entities'} == {t.name for t in tools}
+            for name, args in [
+                ('get_case', {'id':'QDTS-26-000001', 'sections':['people','tasks']}),
+                ('get_case_summary', {'id':'QDTS-26-000001'}),
+                ('get_case_status', {'id':'QDTS-26-000001'}),
+                ('get_case_slice', {'id':'QDTS-26-000001', 'section':'people'}),
+                ('get_cases', {'ids':['QDTS-26-000001'], 'view':'status'}),
+                ('get_case_filter_values', {'field':'state'}),
+                ('lookup_case_entities', {'kind':'people', 'query':'fixtureone'}),
+            ]:
+                result = await session.call_tool(name, args)
+                assert not result.isError, name
             schema = next(t.inputSchema for t in tools if t.name == 'search_cases')
             result = await session.call_tool('search_cases', {'query':'privatequartz','include_notes':True})
             assert not result.isError
@@ -173,10 +185,16 @@ def main():
                 assert 'server:mcp:qdts' in ids
                 if model == 'case-assistant':
                     assert ids == ['server:mcp:qdts']
-                for marker in ('MY', 'BLOCKED', 'CLOSED', 'PEOPLE', 'PRIVATE'):
+                for marker in ('MY', 'BLOCKED', 'CLOSED', 'PEOPLE', 'PRIVATE', 'STATUS', 'SUMMARY', 'TASKS', 'BATCH', 'FILTERS', 'LOOKUP'):
                     res = stack.chat(user, model, 'TEST_' + marker, wait=60, tries=1)
                     assert not res['timeout'] and res['text'], f'{model}/{marker} did not finish'
-                    assert any(t.endswith('search_cases' if marker in ('MY', 'BLOCKED', 'CLOSED') else 'get_case_notes') for t in res['tools']), f'{model}/{marker} missing tool'
+                    expected = {'MY':'search_cases', 'BLOCKED':'search_cases', 'CLOSED':'search_cases',
+                                'PEOPLE':'get_case_slice', 'PRIVATE':'get_case_notes', 'STATUS':'get_case_status',
+                                'SUMMARY':'get_case_summary', 'TASKS':'get_case_slice', 'BATCH':'get_cases',
+                                'FILTERS':'get_case_filter_values', 'LOOKUP':'lookup_case_entities'}[marker]
+                    assert any(t.endswith(expected) for t in res['tools']), f'{model}/{marker} missing tool'
+                    if marker in ('STATUS', 'SUMMARY', 'TASKS', 'PEOPLE'):
+                        assert not any(t.endswith('get_case') for t in res['tools']), f'{model}/{marker} fetched full case'
                     print(f'PASS ordinary-user native tool loop {model}/{marker}', flush=True)
             # Saved outside connection must fail closed even with no XAI env key.
             call(stack.base, 'POST', '/openai/config/update', token, {'ENABLE_OPENAI_API': True,
