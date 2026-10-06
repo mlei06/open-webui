@@ -269,6 +269,22 @@ class ProvisionTests(unittest.TestCase):
         order = ['accounts', 'davy', 'xai', 'mcp', 'filter', 'audit', 'translator', 'kbtool', 'office', 'knowledge', 'presets', 'branding']
         self.assertEqual(names, order)  # tools and knowledge exist before the presets that attach them
 
+    def test_path_is_resolved_by_existing_mcp_stage_before_context_and_presets(self):
+        import mcp_servers
+        import presets
+        servers = {s['id']: s for s in mcp_servers.load_servers()}
+        conn = mcp_servers.desired_connection(servers['path'], mcp_servers.resolve(servers['path'], {}), {})
+        doc, models = presets.load_presets()
+        path = next(m for m in models if m['id'] == 'path')
+        desired = presets.desired_model(path, doc['base_model'], doc['filter_ids'])
+        self.assertEqual(conn['info']['id'], 'path')
+        self.assertEqual(desired['meta']['toolIds'], ['server:mcp:path'])
+        names = [s[0] for s in provision.STEPS]
+        self.assertLess(names.index('mcp'), names.index('filter'))
+        self.assertLess(names.index('filter'), names.index('presets'))
+        self.assertIn('PATH_MCP_API_KEY', (HERE / '.env.example').read_text())
+        self.assertIn('synthetic-path-secret', provision.secret_values({'PATH_MCP_API_KEY': 'synthetic-path-secret'}))
+
     def test_every_step_script_exists(self):
         for _, _, script, _, _ in provision.STEPS:
             self.assertTrue((provision.BOOTSTRAP / script).is_file(), script)

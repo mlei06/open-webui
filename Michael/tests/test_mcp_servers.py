@@ -29,7 +29,7 @@ def write_doc(tmp, doc):
 
 class InventoryTests(unittest.TestCase):
     def test_shipped_inventory_is_valid(self):
-        self.assertEqual(set(BY_ID), {'doctranslator', 'employee_directory', 'mail', 'qdts', 'employee_directory_write'})
+        self.assertEqual(set(BY_ID), {'doctranslator', 'employee_directory', 'mail', 'qdts', 'path', 'employee_directory_write'})
         self.assertFalse(BY_ID['employee_directory_write']['enabled'])
         self.assertEqual(BY_ID['employee_directory_write']['access'], {'type': 'admin'})
 
@@ -45,6 +45,18 @@ class InventoryTests(unittest.TestCase):
             self.assertTrue(m.name_allowed('qdts_' + name, filters))
         for name in ('create_case', 'update_case', 'delete_case', 'send_mail'):
             self.assertFalse(m.name_allowed('qdts_' + name, filters))
+
+    def test_path_declares_exactly_nine_tools_and_filter(self):
+        expected = ['path_search_records', 'path_get_record_status', 'path_get_record_details',
+                    'path_get_record_history', 'path_get_records', 'path_count_records',
+                    'path_get_activity', 'path_get_filter_values', 'path_lookup_employees']
+        self.assertEqual(BY_ID['path']['tools'], expected)
+        self.assertEqual(BY_ID['path']['function_name_filter_list'], expected)
+        c = want('path', {})
+        self.assertTrue(c['config']['enable'])
+        self.assertEqual(c['config']['function_name_filter_list'].split(','), expected)
+        for old in ('path_list_records', 'path_get_record', 'check_in', 'mark_picked_up'):
+            self.assertFalse(m.name_allowed(old, expected))
 
     def test_schema_rejects_bad_documents(self):
         import tempfile
@@ -99,6 +111,18 @@ class ConnectionTests(unittest.TestCase):
         c = want('employee_directory', {'EMPLOYEE_MCP_API_KEY': 'k2'})
         self.assertEqual((c['auth_type'], c['key']), ('bearer', 'k2'))
 
+    def test_path_defaults_to_keyless_and_accepts_explicit_url_and_optional_key(self):
+        c = want('path', {})
+        self.assertEqual((c['url'], c['auth_type'], c['key']),
+                         ('http://host.docker.internal:18076/mcp/', 'none', ''))
+        self.assertIsNone(c['headers'], 'no forwarded-email identity contract')
+        self.assertEqual(c['config']['access_grants'],
+                         [{'principal_type': 'user', 'principal_id': '*', 'permission': 'read'}])
+        c = want('path', {'PATH_MCP_URL': 'https://path.test/mcp/', 'PATH_MCP_API_KEY': 'synthetic'})
+        self.assertEqual((c['url'], c['auth_type'], c['key']),
+                         ('https://path.test/mcp/', 'bearer', 'synthetic'))
+        self.assertEqual(want('path', {'PATH_MCP_API_KEY': '  '})['auth_type'], 'none')
+
     def test_mail_connection_sends_identity_headers_and_key(self):
         c = want('mail', {'MAIL_MCP_API_KEY': 'k-mail'})
         self.assertEqual((c['url'], c['auth_type'], c['key']), ('http://mail-service:8000/mcp', 'bearer', 'k-mail'))
@@ -150,6 +174,28 @@ class PlanTests(unittest.TestCase):
         out, actions = m.plan([old], [want('doctranslator')], False, set())
         self.assertEqual(actions, [('doctranslator', 'updated')])
         self.assertEqual(out[0]['managed_by'], m.MANAGED_BY)
+
+    def test_path_adopts_manual_v1_connection_in_place_and_is_idempotent(self):
+        desired = want('path', {})
+        old = copy.deepcopy(desired)
+        old.pop('managed_by')
+        old['info']['name'] = 'path'
+        old['config']['function_name_filter_list'] = 'path_list_records,path_get_record,path_count_records'
+        old['config']['extra'] = 'keep'
+        manual = {'info': {'id': 'unrelated'}, 'url': 'http://unrelated.test/mcp'}
+        before = copy.deepcopy([manual, old])
+        out, actions = m.plan(before, [desired], False, {'path'})
+        self.assertEqual(actions, [('path', 'updated')])
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[0], manual)
+        self.assertEqual(out[1]['info']['id'], 'path')
+        self.assertEqual(out[1]['config']['extra'], 'keep')
+        self.assertEqual(out[1]['managed_by'], m.MANAGED_BY)
+        self.assertEqual(out[1]['config']['function_name_filter_list'], desired['config']['function_name_filter_list'])
+        again, actions = m.plan(out, [desired], False, {'path'})
+        self.assertEqual(again, out)
+        self.assertEqual(actions, [('path', 'unchanged')])
+        self.assertNotIn('managed_by', before[1], 'planner must not mutate its input')
 
     def test_prune_only_managed_and_undeclared(self):
         stale = {**want('employee_directory')}

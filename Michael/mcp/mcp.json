@@ -115,6 +115,34 @@
       "function_name_filter_list": ["search_cases", "get_case", "get_case_notes", "get_case_summary", "get_case_status", "get_case_slice", "get_cases", "get_case_filter_values", "lookup_case_entities"]
     },
     {
+      "id": "path",
+      "name": "PATH mailroom reads",
+      "description": "Read-only PACKAGE and checked-in MAIL records, custody and bounded employee lookup. Identity selects a filter, not authorization.",
+      "type": "mcp",
+      "transport": "streamable-http",
+      "url": "${PATH_MCP_URL}",
+      "env": [
+        {
+          "name": "PATH_MCP_URL",
+          "required": false,
+          "secret": false,
+          "description": "PATH /mcp/ URL reachable from Open WebUI; default is the local review backend.",
+          "default": "http://host.docker.internal:18076/mcp/"
+        },
+        {
+          "name": "PATH_MCP_API_KEY",
+          "required": false,
+          "secret": true,
+          "description": "Optional shared bearer key; leave empty for the approved keyless internal backend. Not an employee identity."
+        }
+      ],
+      "auth": { "type": "bearer", "key_env": "PATH_MCP_API_KEY", "optional": true },
+      "access": { "type": "public" },
+      "enabled": true,
+      "tools": ["path_search_records", "path_get_record_status", "path_get_record_details", "path_get_record_history", "path_get_records", "path_count_records", "path_get_activity", "path_get_filter_values", "path_lookup_employees"],
+      "function_name_filter_list": ["path_search_records", "path_get_record_status", "path_get_record_details", "path_get_record_history", "path_get_records", "path_count_records", "path_get_activity", "path_get_filter_values", "path_lookup_employees"]
+    },
+    {
       "id": "employee_directory_write",
       "name": "Employee directory (write)",
       "description": "Create, update and soft-delete employees. Admin only. Needs the write instance of the directory (compose profile write) and its own key.",

@@ -10,6 +10,7 @@
     "document-translator": ["name", "id", "email"],
     "lenny": ["name", "id", "email"],
     "case-assistant": ["name", "id"],
+    "path": ["name", "id"],
     "web-searcher": ["name"],
     "office-agent": ["name", "id", "email"],
     "knowledge-base-manager": ["name"],

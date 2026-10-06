@@ -26,7 +26,8 @@
         {"tool": "generate_slide_pptx"},
         {"tool": "generate_docx_documents"},
         {"tool": "knowledge_base_manager"},
-        {"server": "qdts"}
+        {"server": "qdts"},
+        {"server": "path"}
       ],
       "actions": ["mail_review"],
       "capabilities": {
@@ -53,6 +54,31 @@
       "description": "Finds and explains internal QDTS cases, owners, history and all notes. Read only; Davy Gemma only.",
       "prompt": "case-assistant.md",
       "tools": [{"server": "qdts"}],
+      "knowledge_bases": [],
+      "capabilities": {
+        "file_upload": false,
+        "file_context": false,
+        "web_search": false,
+        "image_generation": false,
+        "code_interpreter": false,
+        "terminal": false,
+        "memory": false,
+        "builtin_tools": true,
+        "citations": true,
+        "status_updates": true,
+        "usage": false
+      },
+      "builtin_tools": ["time", "user_input"],
+      "default_features": [],
+      "params": {"temperature": 0.2}
+    },
+    {
+      "id": "path",
+      "name": "PATH assistant",
+      "icon": "path.svg",
+      "description": "Read-only PATH packages, checked-in mail and custody history. Davy Gemma only; no mail drafting, web, files or knowledge bases.",
+      "prompt": "path-assistant.md",
+      "tools": [{"server": "path"}],
       "knowledge_bases": [],
       "capabilities": {
         "file_upload": false,
@@ -130,7 +156,8 @@
       "prompt": "office-agent.md",
       "tools": [
         {"server": "employee_directory"},
-        {"server": "mail"}
+        {"server": "mail"},
+        {"server": "path"}
       ],
       "actions": ["mail_review"],
       "capabilities": {
