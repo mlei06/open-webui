@@ -373,3 +373,7 @@ python3 Michael/bootstrap/branding.py --rollback
 ```
 
 This toggles the plugin off through the admin API, so `/static/custom.css` serves 0 bytes. Re-run `branding.py` to re-apply.
+
+### Managed visual and interface extensions
+
+The unified bootstrap also reconciles `extensions.json`: Visuals Toolkit V4, Interface Toggles, and Collapsed Sidebar Pinned Models, plus explicit retirement of OpenUI, Delegated Agent Runner, File Sending Tool, and llmtrace. See [managed extensions](docs/EXTENSIONS.md). `readable_generation_info` remains installed for later internal-model work.

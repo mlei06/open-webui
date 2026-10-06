@@ -73,7 +73,7 @@ class InitEnvTests(unittest.TestCase):
         self.assertNotIn('MAIL_SMTP_TLS_VERIFY', v)
 
     def test_never_overwrites_and_is_idempotent(self):
-        self.env.write_text(f'SMTP_HOST=h\nMAIL_PROVIDER=mock\nWEBUI_SECRET_KEY={SECRET}\nMAIL_MCP_API_KEY={SECRET}\nMAIL_SERVICE_SRC=/elsewhere\nMAIL_SMTP_TLS_VERIFY=true\nEMPLOYEE_DIRECTORY_SRC=/e\nQDTS_CASES_SRC=/c\nQDTS_MCP_API_KEY={SECRET}\nQDTS_CUSTOMER_NAMES=plain\n')
+        self.env.write_text(f'SMTP_HOST=h\nMAIL_PROVIDER=mock\nWEBUI_SECRET_KEY={SECRET}\nMAIL_MCP_API_KEY={SECRET}\nMAIL_SERVICE_SRC=/elsewhere\nMAIL_SMTP_TLS_VERIFY=true\nEMPLOYEE_DIRECTORY_SRC=/e\nQDTS_CASES_SRC=/c\nQDTS_MCP_API_KEY={SECRET}\nQDTS_CUSTOMER_NAMES=plain\nOPEN_TERMINAL_API_KEY={SECRET}\n')
         before = self.env.read_text()
         code, out = self.run_init()
         self.assertEqual(code, 0)
@@ -266,7 +266,7 @@ class ProvisionTests(unittest.TestCase):
 
     def test_steps_follow_dependency_order(self):
         names = [s[0] for s in provision.STEPS]
-        order = ['accounts', 'davy', 'xai', 'mcp', 'filter', 'audit', 'translator', 'kbtool', 'office', 'knowledge', 'presets', 'branding']
+        order = ['accounts', 'davy', 'xai', 'mcp', 'filter', 'audit', 'translator', 'kbtool', 'office', 'extensions', 'knowledge', 'presets', 'branding']
         self.assertEqual(names, order)  # tools and knowledge exist before the presets that attach them
 
     def test_path_is_resolved_by_existing_mcp_stage_before_context_and_presets(self):

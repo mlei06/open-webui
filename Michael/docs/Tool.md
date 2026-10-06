@@ -202,15 +202,18 @@ Either order works: `mcp_servers.py` is the only script that registers the MCP c
 
 Limits: 8 MiB per file; generic gateway error on rejection; shared identity; the key sits in the tool valves (encrypted at rest when enabled) and the MCP connection (not covered by valve encryption).
 
-## 7. Instance-local tools with no source here
+## 7. Managed and instance-local extensions
 
-The live Open WebUI instance also has these workspace tools. **Their source is not in this repository**, they are not provisioned by any script here, and this document does not describe what they do:
+Knowledge Base Manager is committed at `Michael/tools/knowledge_base_manager.json`
+and provisioned by `bootstrap/kb_manager_tool.py`.
 
-- `delegated_agent_runner`
-- `file_sending_tool`
-- `knowledge_base_manager`
+Visuals Toolkit V4 and the Interface Toggles / Collapsed Sidebar Pinned Models
+functions are managed by `extensions.json` and the unified bootstrap. See
+[Managed extensions](EXTENSIONS.md) for source, activation, access and dependencies.
 
-Treat them as instance-local. If one of them should be reproducible, export its source from the instance (Workspace > Tools, or `GET /api/v1/tools/export`), review it, and add it under `Michael/tools/` with a bootstrap step.
+`openui`, `delegated_agent_runner`, `file_sending_tool` and `llmtrace` are explicitly
+retired by that manifest. `readable_generation_info` remains installed but unmanaged
+pending internal-model compatibility work.
 
 ## 8. What is verified here and what is from the official docs
 
@@ -218,7 +221,7 @@ Treat them as instance-local. If one of them should be reproducible, export its 
 
 - API routes and fields in sections 4.2 and 5: `backend/open_webui/routers/tools.py`, `backend/open_webui/routers/configs.py`, `backend/open_webui/models/tools.py`.
 - Section 6: `Michael/tools/document_translator.py` (version 0.2.0, the rewrite on `main`), `Michael/bootstrap/translator_tool.py`, `Michael/bootstrap/mcp_servers.py`, `Michael/docker-compose.yaml`, `Michael/README.md`, and `backend/open_webui/utils/valves.py` for valve encryption. Nothing was run against a live gateway.
-- The names in section 7 are as given by the instance owner; the instance was not inspected.
+- Section 7 reflects the live-instance audit and managed extension policy; see EXTENSIONS.md.
 
 **Taken from the official documentation** (<https://docs.openwebui.com/features/extensibility/plugin/> and the pages under it), not re-tested here:
 

@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "managed": [
+    {
+      "kind": "tools",
+      "id": "visuals_toolkit_v4",
+      "name": "Visuals Toolkit V4",
+      "file": "tools/visuals_toolkit_v4.py",
+      "access_grants": []
+    },
+    {
+      "kind": "functions",
+      "id": "interface_toggles",
+      "name": "Interface Toggles",
+      "file": "functions/interface_toggles.py",
+      "active": true,
+      "global_filter": false
+    },
+    {
+      "kind": "functions",
+      "id": "collapsed_sidebar_pinned_models",
+      "name": "Collapsed Sidebar Pinned Models",
+      "file": "functions/collapsed_sidebar_pinned_models.py",
+      "active": true,
+      "global_filter": false
+    }
+  ],
+  "retired": {
+    "tools": [
+      "openui",
+      "delegated_agent_runner",
+      "file_sending_tool"
+    ],
+    "functions": [
+      "llmtrace"
+    ]
+  },
+  "unmanaged": [
+    "readable_generation_info"
+  ]
+}

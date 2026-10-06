@@ -29,6 +29,7 @@ two things no single script owns: first-run admin creation and the final access 
   8. translator    Document Translator tool and base model (translator_tool.py)
   9. kb tool       Knowledge Base Manager tool (kb_manager_tool.py)
  10. office tools  slide and Word generator tools (office_tools.py)
+ 10b. extensions   managed visual/UI extensions and explicit retirements (extensions.py)
  11. knowledge     knowledge bases and their seed files (knowledge_bases.py)
  12. presets       the presets, the Review and send email action, web search, knowledge attachment
                    (presets.py)
@@ -40,7 +41,7 @@ two things no single script owns: first-run admin creation and the final access 
 
 Options: --check; --init-env (and --mail-src / --employee-src PATH); --only a,b and --skip a,b (step
 names above: wait admin accounts davy xai mcp filter audit translator kbtool office knowledge presets branding
-employees smtp access); --employees FILE; --update-knowledge (overwrite seed files edited in the app);
+employees smtp access extensions); --employees FILE; --update-knowledge (overwrite seed files edited in the app);
 --env-file FILE (default $MICHAEL_ENV_FILE, else Michael/.env).
 
 Exit 0 when nothing FAILed (NOTEs are listed at the end and do not fail the run). Standard library
@@ -80,6 +81,7 @@ STEPS = [
     ('translator', 'Document Translator tool', 'translator_tool.py', False, None),
     ('kbtool', 'Knowledge Base Manager tool', 'kb_manager_tool.py', False, ['--check']),
     ('office', 'Office document generator tools', 'office_tools.py', False, ['--check']),
+    ('extensions', 'Managed visual/UI extensions and retired plugins', 'extensions.py', False, ['--check']),
     ('knowledge', 'Knowledge bases', 'knowledge_bases.py', False, ['--check']),
     ('presets', 'Presets, action, web search', 'presets.py', False, ['--check']),
     ('branding', 'Lenovo branding', 'branding.py', False, ['--check']),
