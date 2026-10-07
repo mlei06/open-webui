@@ -157,6 +157,68 @@ async def _terminal_context(request, user, metadata):
     return info
 
 
+RENDER_SERVICE_USER = 'michael-render'
+RENDER_FOLDER = '.michael-render/out'
+
+
+async def _service_context(request):
+    """Terminal access for rendering when the user has no terminal selected.
+
+    Images are drawn by the registered terminal's Chromium; they need a terminal, not the user's. The tool
+    reaches it as a fixed service identity (never a model- or user-supplied one) with its own home, writes the
+    image under RENDER_FOLDER, reads it back, deletes it and registers the bytes in the caller's own Files.
+    """
+    import time
+    from open_webui.models.config import Config
+    from open_webui.models.users import UserModel
+    from open_webui.utils.terminals import get_terminal_request_info
+    connections = await Config.get('terminal_server.connections', []) or []
+    connection = next((c for c in connections if c.get('enabled', True)), None)
+    if not connection:
+        raise ValueError('Image rendering is unavailable: no Open Terminal is registered. Ask an administrator to run bootstrap/open_terminal.py.')
+    now = int(time.time())
+    service = UserModel(id=RENDER_SERVICE_USER, email=RENDER_SERVICE_USER + '@localhost.invalid', name='Image renderer',
+                        role='admin', last_active_at=now, updated_at=now, created_at=now)
+    info = await get_terminal_request_info(request, service, {'terminal_id': connection.get('id')})
+    if not info:
+        raise ValueError('Image rendering is unavailable: the registered Open Terminal cannot be reached')
+    return info
+
+
+async def _render_context(request, user, metadata):
+    """(context, own): the caller's selected terminal when there is one, else the render service."""
+    if (metadata or {}).get('terminal_id'):
+        return await _terminal_context(request, user, metadata), True
+    if not user or not user.get('id'):
+        raise ValueError('Sign in to render images')
+    return await _service_context(request), False
+
+
+_TERMINAL_DISCARD_PROGRAM = r'''
+import json,base64,os
+p=json.loads(base64.b64decode(PAYLOAD))
+parts=p['path'].split('/')
+if parts[0]!='.michael-render' or any(x in ('','.','..') or '\\' in x or '\x00' in x for x in parts):raise ValueError('Invalid path')
+fd=os.open(os.path.expanduser('~'),os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+try:
+ for name in parts[:-1]:
+  nxt=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd);os.close(fd);fd=nxt
+ try:os.unlink(parts[-1],dir_fd=fd)
+ except FileNotFoundError:pass
+finally:os.close(fd)
+print(json.dumps({'discarded':True}))
+'''
+
+
+async def _terminal_discard(context, workspace_path):
+    """Delete a render-service file again (best effort: a leftover image is harmless but untidy)."""
+    try:
+        full, _ = _home_path(workspace_path)
+        await _terminal_execute_json(context, _TERMINAL_DISCARD_PROGRAM, {'path': full})
+    except Exception:
+        pass
+
+
 def _terminal_session(context):
     """(base url, aiohttp session, ssl) for direct calls to the terminal as the caller.
 
@@ -403,11 +465,12 @@ with Image.open(BytesIO(data)) as im:
 '''
 
 
-async def _terminal_plotly(context, figure, theme, width, height, format='png', *, save_to=None, name='visual'):
+async def _terminal_plotly(context, figure, theme, width, height, format='png', *, save_to=None, name='visual', folder=None):
     """Render a Plotly figure inside the terminal and save the image there. The folder defaults to
-    ~/workspace/output; save_to works as in _destination. A taken name gets a random suffix."""
+    ~/workspace/output; save_to works as in _destination; `folder` (render service only) overrides both.
+    A taken name gets a random suffix."""
     extension = '.png' if format == 'png' else '.jpg'
-    folder, filename = _destination(save_to, _safe_name(name) + extension, extension)
+    folder, filename = (folder, _safe_name(name) + extension) if folder else _destination(save_to, _safe_name(name) + extension, extension)
     payload = {'figure': figure, 'theme': theme, 'width': width, 'height': height,
                'format': format, 'filename': filename, 'dirs': folder.split('/') if folder else []}
     return await _terminal_execute_json(context, _TERMINAL_PLOTLY_PROGRAM, payload, timeout=90)
@@ -462,7 +525,7 @@ if not 0<len(data)<=15*1024*1024:raise ValueError('Export exceeds image byte lim
 """
 
 
-async def _terminal_screenshot(context, page, *, width=1280, format='png', save_to=None, name='visual'):
+async def _terminal_screenshot(context, page, *, width=1280, format='png', save_to=None, name='visual', folder=None):
     """Screenshot a stored visualization page with the terminal's own Chromium and save the image there.
 
     The page is uploaded to a private scratch folder first (a page can be far larger than a command line
@@ -470,7 +533,7 @@ async def _terminal_screenshot(context, page, *, width=1280, format='png', save_
     """
     import uuid
     extension = '.png' if format == 'png' else '.jpg'
-    folder, filename = _destination(save_to, _safe_name(name) + extension, extension)
+    folder, filename = (folder, _safe_name(name) + extension) if folder else _destination(save_to, _safe_name(name) + extension, extension)
     scratch = '.michael-render'
     page_name = uuid.uuid4().hex + '.html'
     await _terminal_save(context, page.encode('utf-8') if isinstance(page, str) else page, page_name,

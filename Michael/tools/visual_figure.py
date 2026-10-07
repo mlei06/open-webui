@@ -260,6 +260,6 @@ def _visual_figure(spec, theme):
                    'marker': {'color': theme['colors'][0]}}]
         layout['xaxis']['type'] = 'date'; layout['yaxis']['autorange'] = 'reversed'
     else:
-        raise ValueError('Use bar, line, heatmap, timeline, sequence or gantt')
+        raise ValueError('kind must be bar, line, heatmap, timeline, sequence or gantt. For a pie, donut, gauge, table, funnel, radar, sankey, waterfall, flowchart, tree or dashboard call the matching render_* tool and then export_visual with its visual_id')
     return {'data': traces, 'layout': layout}, {'width': width, 'height': height, 'metadata': metadata,
                                               'caption': caption, 'warnings': warnings}

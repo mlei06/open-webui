@@ -350,7 +350,15 @@ local file), measures the content, screenshots it and saves it through the share
 image sits on a slide; `width` is 600 to 2400 (default 1280) and the height follows the content, refused above 8,000
 px (show fewer rows). The result is the standard delivery result (`download_url`, `workspace_path`,
 `terminal_download_url`, `terminal_saved`, `warnings`). Text-mode output has no image because there is nothing to
-draw. Stored pages are ordinary files in the user's Files store. A selected, registered terminal is required.
+draw. Stored pages are ordinary files in the user's Files store.
+
+**No terminal needed.** A user's terminal is not required for images. With none selected, `export_visual` and
+`render_visualization` render on the registered terminal's Chromium under a fixed service identity (`michael-render`, its
+own home, never the caller's), read the bytes back, delete the working copy under `~/.michael-render/out/`, and register
+the image in the caller's own Files: the result has `download_url` and `file_id` (use `file_id` as `image_file_id` on a
+slide) and no `workspace_path`. `save_to` needs the user's terminal and is refused without one. If no terminal is
+registered at all the tools say so. With the user's terminal selected nothing changes: the image is also saved to
+their home.
 
 **`render_visualization`** builds a bounded, themed Plotly figure from a specification, shows it, exports the PNG
 through the terminal's Plotly and Kaleido, and registers it in Files. Specification: `kind` (`bar`, `line`,
@@ -369,7 +377,8 @@ values stay missing, no pre-2026 zeros, no historical work dates. The installed 
 unavailable in the container; export and browser use the installed Liberation Sans and say so in `warnings`.
 
 **Using the image in a deck.** Pass the returned `workspace_path` as `terminal_image_path` on a slide with
-`template_layout: "Chart Slide"` and `image_fit: "contain"`; render with `show_title: false`. The terminal image has
+`template_layout: "Chart Slide"` and `image_fit: "contain"` (with no terminal, pass the result's `file_id` as
+`image_file_id` instead); render with `show_title: false`. The terminal image has
 Plotly 7.0.0, Kaleido 1.2.0, Choreographer 1.4.0, Debian Chromium and `fonts-liberation` pinned
 ([terminal.md](terminal.md#image-and-registration)).
 

@@ -134,9 +134,12 @@ class LightTheme(unittest.TestCase):
 class ExportVisual(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.mod = load()
+        self.mod.Tools._register_image_real = self.mod.Tools._register_image
         self.tool = self.mod.Tools()
         self.page = b'<html><head><title>Cases by product</title></head><body style="background:#0b0f14"></body></html>'
         self.record = types.SimpleNamespace(user_id='u1', filename='visual-' + VISUAL_ID + '.html', path='stored/path')
+        self.render_context = AsyncMock(return_value=(('http://t', {}, {}), True))
+        self.discard = AsyncMock()
         self.shot = AsyncMock(return_value={'workspace_path': '~/workspace/output/cases-by-product.png', 'size': 5, 'sha256': '',
                                            'width': 1280, 'height': 450, 'warnings': []})
         import hashlib
@@ -148,7 +151,8 @@ class ExportVisual(unittest.IsolatedAsyncioTestCase):
                 'open_webui.storage': types.ModuleType('open_webui.storage'),
                 'open_webui.storage.provider': types.SimpleNamespace(Storage=types.SimpleNamespace(get_file=lambda path: str(self.file))),
             }),
-            patch.object(self.mod, '_terminal_context', new=AsyncMock(return_value=('http://t', {}, {}))),
+            patch.object(self.mod, '_render_context', new=self.render_context),
+            patch.object(self.mod, '_terminal_discard', new=self.discard),
             patch.object(self.mod, '_terminal_screenshot', new=self.shot),
             patch.object(self.mod, '_terminal_image', new=AsyncMock(return_value=b'12345')),
             patch.object(self.mod.Tools, '_register_image', new=self.register),
@@ -197,6 +201,51 @@ class ExportVisual(unittest.IsolatedAsyncioTestCase):
             result = await self.export(**options)
             self.assertEqual(result['status'], 'error', options)
         self.shot.assert_not_awaited()
+
+    async def no_terminal(self, **kwargs):
+        self.render_context.return_value = (('http://service', {}, {}), False)
+        return await self.tool.export_visual(VISUAL_ID, __request__=object(), __user__={'id': 'u1'}, __metadata__={}, **kwargs)
+
+    async def test_without_a_terminal_the_image_is_rendered_by_the_service_and_delivered_as_a_download(self):
+        result = await self.no_terminal(theme='light')
+        self.assertEqual(result['status'], 'success')
+        self.assertEqual(result['download_url'], '/api/v1/files/img-1/content')
+        self.assertIsNone(result['workspace_path']); self.assertIsNone(result['terminal_download_url']); self.assertFalse(result['terminal_saved'])
+        self.assertEqual(self.shot.await_args.kwargs['folder'], self.mod.RENDER_FOLDER)
+        self.discard.assert_awaited_once()                       # the working copy is removed again
+        self.assertIn('image_file_id', result['instructions'])
+        self.assertNotIn('#0b0f14', self.shot.await_args.args[1])  # the light theme works the same way
+
+    async def test_with_a_terminal_the_image_goes_to_the_users_own_folder_and_nothing_is_discarded(self):
+        await self.export()
+        self.assertIsNone(self.shot.await_args.kwargs['folder'])
+        self.discard.assert_not_awaited()
+
+    async def test_save_to_without_a_terminal_fails_before_any_rendering(self):
+        result = await self.no_terminal(save_to='projects/report')
+        self.assertEqual(result['status'], 'error'); self.assertIn('Open Terminal', result['error'])
+        self.shot.assert_not_awaited()
+
+    async def test_a_failed_registration_without_a_terminal_copy_is_an_error_not_a_partial_success(self):
+        real = type(self.tool)._register_image_real
+        uploads = []
+        with fake_open_webui(uploads):
+            async def boom(**_):
+                raise RuntimeError('storage down')
+            sys.modules['open_webui.routers.files'].upload_file_handler = boom
+            with patch.object(self.mod.Tools, '_register_image', new=real):
+                result = await self.no_terminal()
+        self.assertEqual(result['status'], 'error'); self.assertIn('could not be registered', result['error'])
+
+    async def test_a_failed_terminal_registration_keeps_the_verified_terminal_copy(self):
+        real = type(self.tool)._register_image_real
+        with fake_open_webui([]):
+            async def boom(**_):
+                raise RuntimeError('storage down')
+            sys.modules['open_webui.routers.files'].upload_file_handler = boom
+            with patch.object(self.mod.Tools, '_register_image', new=real):
+                result = await self.export()
+        self.assertEqual(result['status'], 'partial_success'); self.assertTrue(result['terminal_saved'])
 
     async def test_a_failed_registration_keeps_the_verified_terminal_copy(self):
         async def partial(self, raw, name, image_format, result, request, user, emitter):

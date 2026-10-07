@@ -14,6 +14,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
@@ -371,6 +372,67 @@ class ChartPayloadTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError, msg=bad):
                 await self.payload(save_to=bad)
 
+
+
+class RenderServiceTests(unittest.IsolatedAsyncioTestCase):
+    """Rendering needs a terminal, not the user's: with none selected a fixed service identity is used."""
+
+    def stubs(self, connections):
+        calls = []
+
+        class User:
+            def __init__(self, **kw):
+                self.__dict__.update(kw)
+
+        async def info(request, user, metadata, extra=None):
+            calls.append((user, metadata))
+            return ('http://terminal', {'X-User-Id': user.id}, {})
+
+        config = types.SimpleNamespace(Config=types.SimpleNamespace(get=AsyncMock(return_value=connections)))
+        modules = {'open_webui.models.config': config, 'open_webui.models.users': types.SimpleNamespace(UserModel=User),
+                   'open_webui.utils.terminals': types.SimpleNamespace(get_terminal_request_info=info)}
+        return patch.dict(sys.modules, modules), calls
+
+    async def test_a_selected_terminal_is_the_callers_own(self):
+        with patch.object(wd, '_terminal_context', new=AsyncMock(return_value=('u', {}, {}))):
+            context, own = await wd._render_context(object(), {'id': 'u1'}, {'terminal_id': 'open-terminal'})
+        self.assertTrue(own); self.assertEqual(context, ('u', {}, {}))
+
+    async def test_without_one_the_first_enabled_registered_terminal_is_used_as_the_service_identity(self):
+        patcher, calls = self.stubs([{'id': 'off', 'enabled': False}, {'id': 'open-terminal'}])
+        with patcher:
+            context, own = await wd._render_context(object(), {'id': 'u1'}, {})
+        self.assertFalse(own)
+        user, metadata = calls[0]
+        self.assertEqual((user.id, user.role, metadata), (wd.RENDER_SERVICE_USER, 'admin', {'terminal_id': 'open-terminal'}))
+        self.assertEqual(context[1]['X-User-Id'], wd.RENDER_SERVICE_USER)  # never the caller's id, so no home of theirs is touched
+
+    async def test_no_registered_terminal_or_no_user_is_a_clear_error(self):
+        patcher, _ = self.stubs([])
+        with patcher:
+            with self.assertRaisesRegex(ValueError, 'no Open Terminal is registered'):
+                await wd._render_context(object(), {'id': 'u1'}, {})
+        with self.assertRaisesRegex(ValueError, 'Sign in'):
+            await wd._render_context(object(), None, {})
+
+    async def test_discard_only_touches_the_render_folder(self):
+        run = AsyncMock(return_value={'discarded': True})
+        with patch.object(wd, '_terminal_execute_json', new=run):
+            await wd._terminal_discard(('u', {}, {}), '~/.michael-render/out/a.png')
+        self.assertEqual(run.await_args.args[2], {'path': '.michael-render/out/a.png'})
+        compile(wd._TERMINAL_DISCARD_PROGRAM.replace('PAYLOAD', repr('e30=')), 'p', 'exec')
+        self.assertIn("parts[0]!='.michael-render'", wd._TERMINAL_DISCARD_PROGRAM)
+        run.reset_mock()
+        with patch.object(wd, '_terminal_execute_json', new=AsyncMock(side_effect=ValueError('x'))):
+            await wd._terminal_discard(('u', {}, {}), '~/.michael-render/out/a.png')  # best effort: never raises
+
+    async def test_the_folder_override_reaches_the_programs(self):
+        run = AsyncMock(return_value={})
+        saved = AsyncMock(return_value='~/.michael-render/page.html')
+        with patch.object(wd, '_terminal_execute_json', new=run), patch.object(wd, '_terminal_save', new=saved):
+            await wd._terminal_plotly(('u', {}, {}), {}, {}, 800, 400, 'png', name='x', folder='.michael-render/out')
+            await wd._terminal_screenshot(('u', {}, {}), '<html></html>', name='x', folder='.michael-render/out')
+        self.assertEqual([c.args[2]['dirs'] for c in run.await_args_list], [['.michael-render', 'out']] * 2)
 
 if __name__ == '__main__':
     unittest.main()

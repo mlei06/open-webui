@@ -9,7 +9,7 @@ This file also owns the **file delivery contract**: how every tool saves files i
 download links.
 
 Contents: [Deployment contract](#deployment-contract) · [Start and register](#start-and-register) · [Use and access](#use-and-access) ·
-[Operations](#operations-and-troubleshooting) · [Image and registration](#image-and-registration) ·
+[Operations](#operations-and-troubleshooting) · [Rendering without a user terminal](#image-rendering-without-a-user-terminal) · [Image and registration](#image-and-registration) ·
 [Confinement and the shared area](#confinement-and-the-shared-area) · [Workspace](#development-media-and-document-workspace) ·
 [File delivery contract](#file-delivery-contract) · [Verification](#verification)
 
@@ -108,6 +108,17 @@ docker compose --env-file Michael/.env -f Michael/docker-compose.yaml up -d --no
 licence into the generated `runtime/plotly`, which compose mounts read-only at Open WebUI's `/static/plotly`, so the
 browser and the terminal export use the same packaged renderer. Rebuilding the terminal ends running processes; home
 files persist in `terminal-data`.
+
+## Image rendering without a user terminal
+
+Image tools need the terminal's Chromium, not the user's terminal. When a chat has no terminal selected,
+`export_visual` and `render_visualization` reach the **first enabled registered terminal** as a fixed service identity
+(`RENDER_SERVICE_USER`, `michael-render`, role `admin` inside Open WebUI so it works whether or not the terminal was
+shared), through `workspace_delivery._service_context`. The identity is set by code, never by the model or user, so no
+user's home is touched; the terminal creates it an OS account and home of its own. Each render writes under
+`~/.michael-render/out/`, the tool reads the bytes back, deletes the file, and registers the image in the *caller's*
+Files. A leftover scratch page or image is harmless but untidy; nothing there is served to users. The terminal's
+reachability is a dependency: if no terminal is registered the tools report that clearly.
 
 ## Confinement and the shared area
 

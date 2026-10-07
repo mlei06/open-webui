@@ -84,7 +84,7 @@ tool_instructions: |
 
 from __future__ import annotations
 
-from workspace_delivery import _terminal_context, _terminal_image, _terminal_save, _office_result, _pptx_visual_theme, _terminal_plotly, _terminal_screenshot, _terminal_download_url, _DELIVERY_INSTRUCTIONS
+from workspace_delivery import _terminal_context, _render_context, _terminal_discard, RENDER_FOLDER, _terminal_image, _terminal_save, _office_result, _pptx_visual_theme, _terminal_plotly, _terminal_screenshot, _terminal_download_url, _DELIVERY_INSTRUCTIONS
 from visual_figure import _visual_figure, _script_json
 
 import functools
@@ -2266,8 +2266,11 @@ pre.vis{{
                 raise ValueError('Files API registration returned no ID')
             result.update(status='success', file_id=str(file_id), download_url='/api/v1/files/' + str(file_id) + '/content')
         except Exception:
-            result.update(status='partial_success')
-            result['warnings'].append('Chart saved in Terminal, but authenticated download registration failed; no download link was created.')
+            if result.get('terminal_saved'):
+                result.update(status='partial_success')
+                result['warnings'].append('Chart saved in Terminal, but authenticated download registration failed; no download link was created.')
+            else:
+                result.update(status='error', error='The image was rendered but could not be registered for download; no link was created.')
         if result['download_url'] and emitter:
             try:
                 await emitter({'type': 'files', 'data': {'files': [
@@ -2308,7 +2311,7 @@ pre.vis{{
         image elsewhere in the user's home: a folder ("projects/report", relative to
         ~/workspace, or "~/folder") or a full path ending in .png/.jpg; the default is
         ~/workspace/output and nothing is overwritten.
-        A selected registered Terminal is required. Partial success preserves the
+        An Open Terminal is optional: without one the image is delivered as a download only (file_id, usable as image_file_id on a slide). Partial success preserves the
         verified available asset; report warnings instead of claiming both copies.
 
         :param specification: The chart specification described above.
@@ -2332,7 +2335,9 @@ pre.vis{{
         try:
             if not isinstance(specification, dict):
                 raise ValueError('specification must be an object')
-            context = await _terminal_context(__request__, __user__, __metadata__)
+            if (save_to if save_to is not None else specification.get('save_to')) is not None and not (__metadata__ or {}).get('terminal_id'):
+                raise ValueError('save_to needs an Open Terminal selected in this chat; without one the image is delivered as a download only')
+            context, own = await _render_context(__request__, __user__, __metadata__)
             valves = await OfficeTools.get_tool_valves_by_id('generate_slide_pptx') or {}
             starter = valves.get('starter_template_b64')
             if specification.get('picture_layout') is not None:
@@ -2354,16 +2359,20 @@ pre.vis{{
             await status('Rendering Plotly chart and saving output...', False)
             title_slug = re.sub(r'[^A-Za-z0-9]+', '-', str(specification.get('title') or 'chart')).strip('-').lower()[:60] or 'chart'
             saved = await _terminal_plotly(context, figure, theme, info['width'], info['height'], image_format,
-                                           save_to=save_to, name=title_slug)
+                                           save_to=save_to, name=title_slug, folder=None if own else RENDER_FOLDER)
             workspace_path = saved['workspace_path']
-            result.update(workspace_path=workspace_path, terminal_saved=True, theme=theme,
-                          terminal_download_url=_terminal_download_url((__metadata__ or {}).get('terminal_id'), workspace_path),
-                          actual_font=saved['font'], source_metadata=info['metadata'])
+            result.update(theme=theme, actual_font=saved['font'], source_metadata=info['metadata'])
+            if own:
+                result.update(workspace_path=workspace_path, terminal_saved=True,
+                              terminal_download_url=_terminal_download_url((__metadata__ or {}).get('terminal_id'), workspace_path))
             result['warnings'] = list(info['warnings']) + saved['warnings']
             raw = await _terminal_image(context, workspace_path)
             if hashlib.sha256(raw).hexdigest() != saved['sha256']:
                 raise ValueError('Rendered chart changed during transfer')
             name = workspace_path.rsplit('/', 1)[-1]
+            if not own:  # rendered on the service identity: the bytes are in hand, the working copy is not needed
+                await _terminal_discard(context, workspace_path)
+                workspace_path = None
             result.update(file_name=name, size=saved['size'], sha256=saved['sha256'], width=info['width'], height=info['height'])
             await self._register_image(raw, name, image_format, result, __request__, __user__, __event_emitter__)
             figure = saved['figure']
@@ -2371,7 +2380,10 @@ pre.vis{{
             body = self._plotly_body(cid, figure['data'], figure['layout'])
             fonts = '''<style>@font-face{font-family:"Liberation Sans";src:url("/static/plotly/LiberationSans-Regular.ttf")}@font-face{font-family:"Liberation Sans";font-weight:700;src:url("/static/plotly/LiberationSans-Bold.ttf")}</style>'''
             # Deterministic native image remains visible when scripts/local JS are unavailable.
-            result['instructions'] = 'Interactive HTML is returned. An image preview is requested only when download_url exists; check warnings. Use workspace_path for terminal_image_path when terminal_saved is true. Disclose font fallback and coverage warnings. ' + _DELIVERY_INSTRUCTIONS
+            result['instructions'] = ('Interactive HTML is returned. An image preview is requested only when download_url exists; check warnings. '
+                                      + ('Use workspace_path for terminal_image_path when terminal_saved is true. ' if own else
+                                         'No terminal was selected, so the image exists only as the download: to put it on a slide pass file_id as image_file_id. ')
+                                      + 'Disclose font fallback and coverage warnings. ' + _DELIVERY_INSTRUCTIONS)
             await status('Chart ready.' if result['status'] == 'success' else 'Terminal chart ready; download unavailable.', True)
             return HTMLResponse(content=self._wrap_html(specification.get('title', 'Chart'), fonts + body, theme=theme),
                                 headers={'Content-Disposition': 'inline'}), result
@@ -2436,7 +2448,7 @@ pre.vis{{
         slide that uses template_layout "Chart Slide" with image_fit "contain".
         Return one download URL per artifact, preferring download_url and using terminal_download_url only
         as a fallback for a verified Terminal copy. Keep workspace_path internally; show it only for an
-        explicit Terminal save/open/edit/reuse request. A selected registered Terminal is required.
+        explicit Terminal save/open/edit/reuse request. An Open Terminal is optional: without one the image is delivered as a download only (the result's file_id works as image_file_id on a slide).
 
         :param visual_id: The visual_id returned by the render_* tool. Nothing else is accepted.
         :param save_to: Where in the user's home to save the image instead of ~/workspace/output: a folder ("projects/report" under ~/workspace, or "~/Documents/board-pack") or a full path ending in .png/.jpg. Use this instead of copying the file afterwards with the shell.
@@ -2473,7 +2485,9 @@ pre.vis{{
             record = await Files.get_file_by_id(str(visual_id or '').strip())
             if (record is None or record.user_id != __user__['id'] or not _VISUAL_NAME.match(record.filename or '')):
                 raise ValueError('No visualization with that visual_id was found. Use the visual_id returned by the render tool that made it.')
-            context = await _terminal_context(__request__, __user__, __metadata__)
+            if save_to is not None and not (__metadata__ or {}).get('terminal_id'):
+                raise ValueError('save_to needs an Open Terminal selected in this chat; without one the image is delivered as a download only')
+            context, own = await _render_context(__request__, __user__, __metadata__)
             local = await asyncio.to_thread(Storage.get_file, record.path)
             with open(local, 'rb') as stream:
                 page = stream.read(_VISUAL_LIMIT + 1)
@@ -2485,18 +2499,25 @@ pre.vis{{
             title = re.search(r'<title>(.*?)</title>', text, re.S)
             slug = re.sub(r'[^A-Za-z0-9]+', '-', html.unescape(title.group(1)) if title else 'visual').strip('-').lower()[:60] or 'visual'
             await status('Rendering the visualization as an image...', False)
-            saved = await _terminal_screenshot(context, text, width=width or 1280, format=format, save_to=save_to, name=slug)
+            saved = await _terminal_screenshot(context, text, width=width or 1280, format=format, save_to=save_to, name=slug,
+                                               folder=None if own else RENDER_FOLDER)
             workspace_path = saved['workspace_path']
-            result.update(workspace_path=workspace_path, terminal_saved=True,
-                          terminal_download_url=_terminal_download_url((__metadata__ or {}).get('terminal_id'), workspace_path))
+            if own:
+                result.update(workspace_path=workspace_path, terminal_saved=True,
+                              terminal_download_url=_terminal_download_url((__metadata__ or {}).get('terminal_id'), workspace_path))
             result['warnings'] = list(saved.get('warnings') or [])
             raw = await _terminal_image(context, workspace_path)
             if hashlib.sha256(raw).hexdigest() != saved['sha256']:
                 raise ValueError('The image changed during transfer')
             name = workspace_path.rsplit('/', 1)[-1]
+            if not own:
+                await _terminal_discard(context, workspace_path)
+                workspace_path = None
             result.update(file_name=name, size=saved['size'], sha256=saved['sha256'], width=saved['width'], height=saved['height'])
             await self._register_image(raw, name, format, result, __request__, __user__, __event_emitter__)
-            result['instructions'] = ('Use workspace_path as terminal_image_path when the image goes into a deck. ' + _DELIVERY_INSTRUCTIONS)
+            result['instructions'] = (('Use workspace_path as terminal_image_path when the image goes into a deck. ' if own else
+                                       'No terminal was selected, so the image exists only as the download: to put it on a slide pass file_id as image_file_id. ')
+                                      + _DELIVERY_INSTRUCTIONS)
             await status('Image ready.' if result['status'] == 'success' else 'Image saved in the terminal; download unavailable.', True)
             return result
         except Exception as exc:
