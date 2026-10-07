@@ -37,6 +37,14 @@
       "file": "functions/collapsed_sidebar_pinned_models.py",
       "active": true,
       "global_filter": false
+    },
+    {
+      "kind": "functions",
+      "id": "token_usage_display",
+      "name": "Token Usage Display",
+      "file": "functions/token_usage_display.py",
+      "active": true,
+      "global_filter": true
     }
   ],
   "retired": {

@@ -103,6 +103,7 @@ Deletion does not erase historical chat output, and old chats can still mention 
 | `workspace_files` | Workspace tool | `tools/workspace_files.py` | Public read; attached to every terminal preset and Office Agent |
 | `interface_toggles` | Event function | `functions/interface_toggles.py` | Active, not global ([functions.md](functions.md#interface-functions)) |
 | `collapsed_sidebar_pinned_models` | Event function | `functions/collapsed_sidebar_pinned_models.py` | Active, not global |
+| `token_usage_display` | Filter function | `functions/token_usage_display.py` | Active and **global** ([functions.md](functions.md#token-usage-display)) |
 
 Retired when present: tools `openui`, `delegated_agent_runner`, `file_sending_tool`, `delegate_subtask_with_model`,
 `sub_agent` (the last two are superseded by `delegate_agents`); function `llmtrace`.

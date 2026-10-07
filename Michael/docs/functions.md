@@ -5,7 +5,7 @@ platform behave. Concepts come from the official documentation
 (<https://docs.openwebui.com/features/extensibility/plugin/>); facts about this stack come from this repository and
 experiments on a throwaway stack (Open WebUI 0.11.4). Workspace tools are in [tools.md](tools.md).
 
-Contents: [Function types](#function-types) · [Security](#security) · [Importing, verifying, rolling back](#importing-verifying-rolling-back) ·
+Contents: [Function types](#function-types) · [Security](#security) · [Importing, verifying, rolling back](#importing-verifying-rolling-back) · [Token usage display](#token-usage-display) ·
 [User context filter](#user-context-filter) · [Review and send email action](#review-and-send-email-action) ·
 [Event functions](#event-functions) · [Audit log](#audit-log) · [Interface functions](#interface-functions)
 
@@ -290,6 +290,31 @@ never recorded, one file per day shared by all workers (single-line appends do n
 (`include_email`, `retention_days`) before applying it to the live instance.
 
 ## Interface functions
+
+## Token usage display
+
+`functions/token_usage_display.py` (id `token_usage_display`, a **global, active filter**; "Token Usage & Cost Display"
+2.6.0 by smetdenis, MIT, kept verbatim with its header) adds a line under each assistant reply: input, output and total
+tokens, the running token total of the chat, reasoning and cached tokens, generation time, tokens per second,
+context-window use (an icon that turns orange at 30% and red at 70%), and cost when the provider reports one. It is
+managed by `extensions.json` (provisioning keeps it installed, active and global; valves are never written, so the
+admin's settings in Admin > Functions survive).
+
+- **Where the numbers come from.** Open WebUI saves provider-reported usage on each message; the filter reads it. A preset
+  only gets real counts when its `usage` capability is on (it sends `stream_options: {include_usage: true}`): Lenny has it
+  on and the provider returns counts. Without reported usage the filter falls back to a local tiktoken estimate, marked
+  as an estimate.
+- **Reviewed behaviour.** Read before adoption: no `exec`, `eval`, subprocess, pickle, environment or file access. With
+  default valves the only outbound request is a short, cached, 2-second read of the model's own provider connection to
+  learn its context size (llama.cpp and llama-swap style endpoints; failures are ignored). `cost_mode` is `auto` (use
+  the provider's cost only; ours reports none, so no cost is shown), so nothing goes to `models.dev`. Fetching context
+  sizes or estimated prices from `https://models.dev` happens only if an admin turns on `fetch_context_from_modelsdev`
+  or `cost_mode: estimate`; nothing about users or chats is sent in those requests.
+- **Pinned.** `tests/test_extensions.py` pins the file's SHA-256, checks the licence header and re-checks that it has no
+  code execution or unexpected URLs, so replacing it with a new upstream version needs a fresh review first.
+- **Editor saves reformat tools.** Saving a function or tool in Open WebUI's code editor re-formats the Python (black
+  style), which shows up as cosmetic drift in `extensions.py --check`; provisioning restores the repository text.
+  Valves changes in the admin UI are not affected.
 
 `functions/interface_toggles.py` and `functions/collapsed_sidebar_pinned_models.py` (both @G30 version 1.0.0, event
 functions managed by `extensions.json`, active and not global) contribute to `/static/loader.js` through the shared

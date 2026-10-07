@@ -52,7 +52,22 @@ class ExtensionsTests(unittest.TestCase):
 
     def test_manifest_sources_compile_and_retired_do_not_overlap(self):
         doc = extensions.load_manifest()
-        self.assertEqual({x['id'] for x in doc['managed']}, {'visuals_toolkit_v4', 'delegate_agents', 'workspace_files', 'interface_toggles', 'collapsed_sidebar_pinned_models'})
+        self.assertEqual({x['id'] for x in doc['managed']}, {'visuals_toolkit_v4', 'delegate_agents', 'workspace_files', 'interface_toggles', 'collapsed_sidebar_pinned_models', 'token_usage_display'})
+
+    def test_the_token_usage_filter_is_a_global_active_filter_and_is_the_reviewed_source(self):
+        import hashlib, re
+        doc = extensions.load_manifest()
+        entry = next(x for x in doc['managed'] if x['id'] == 'token_usage_display')
+        self.assertEqual((entry['kind'], entry['active'], entry['global_filter']), ('functions', True, True))
+        source = (extensions.MICHAEL_DIR / entry['file']).read_text()
+        # Pinned to the reviewed upstream 2.6.0 (MIT, smetdenis). A different file needs a new review first:
+        # outbound requests, file access and code execution were checked, see docs/functions.md.
+        self.assertEqual(hashlib.sha256(source.encode()).hexdigest(), '5c9107a1543114a2dd21dff3b0fa5deb1b40e89d8def48ea137c53789794c1ba')
+        for header in ('title: Token Usage & Cost Display', 'author: smetdenis', 'license: MIT', 'version: 2.6.0'):
+            self.assertIn(header, source.split('"""')[1])
+        for forbidden in ('subprocess', 'os.system', 'eval(', 'exec(', '__import__', 'pickle', 'os.environ', 'getenv'):
+            self.assertNotIn(forbidden, source, forbidden)
+        self.assertEqual(set(re.findall(r'https?://[^\s"\')]+', source.replace('https://github.com/SmetDenis', ''))) - {'https://models.dev/models.json', 'https://models.dev/api.json', 'http://127.0.0.1:8080'}, set())  # the last is an example in a valve description
 
 
 if __name__ == '__main__':unittest.main()
