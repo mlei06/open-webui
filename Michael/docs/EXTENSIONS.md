@@ -48,7 +48,8 @@ flags; that check alone is not a browser rendering test.
 
 The manifest removes only these IDs when present:
 
-- Tools: `openui`, `delegated_agent_runner`, `file_sending_tool`.
+- Tools: `openui`, `delegated_agent_runner`, `file_sending_tool`, `delegate_subtask_with_model`, `sub_agent`
+  (the last two are superseded by `delegate_agents`).
 - Function: `llmtrace` (including its global filter registration).
 
 Before updating or removing an existing resource, the reconciler saves its source

@@ -36,7 +36,9 @@
     "tools": [
       "openui",
       "delegated_agent_runner",
-      "file_sending_tool"
+      "file_sending_tool",
+      "delegate_subtask_with_model",
+      "sub_agent"
     ],
     "functions": [
       "llmtrace"
