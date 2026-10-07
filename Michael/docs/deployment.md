@@ -35,7 +35,7 @@ feature files listed in [README.md](README.md).
 | `open-webui` | Chat, uploads, identity, presets, tools, functions, skills | Built from `Dockerfile.qdts-backend` onto a retained baseline image. Port `${OPEN_WEBUI_PORT:-3000}`. Mounts `runtime/certs` (read-only), `backend/open_webui/main.py` (read-only) and `runtime/plotly` (read-only). `ENABLE_OLLAMA_API=false`. |
 | `open-terminal` | Per-user shell, Python and file workspace | Pinned `open-terminal:0.14.0` plus Chromium, Plotly and the confinement patch. No published port. 2 CPUs, 2 GiB, 512 processes. See [terminal.md](terminal.md). |
 | `terminal-shared-writer` | Fills the read-only `/shared` area | Profile `admin`, no network, runs only on request. |
-| `employee-directory` | Employee REST API, UI and MCP server | Built from `EMPLOYEE_DIRECTORY_SRC`. UI on `127.0.0.1:${EMPLOYEE_DIRECTORY_PORT:-8780}` only. Used by the Office Agent. |
+| `employee-directory` | Employee REST API, UI and MCP server | Built from `EMPLOYEE_DIRECTORY_SRC`. UI on `127.0.0.1:${EMPLOYEE_DIRECTORY_PORT:-8780}` only. Not attached to any preset today. |
 | `employee-directory-write` | Write-capable directory instance | Profile `write`, disabled by default and admin-only. |
 | `mail-service` | Draft and send mail | Built from `MAIL_SERVICE_SRC`. No published port. Provider `mock` or `smtp`. |
 | `qdts-cases` | Read-only QDTS replica, 13 legacy tools at `/mcp` and 8 v2 tools at `/mcp/v2` | Built from `QDTS_CASES_SRC`. Serves a derived index mounted read-only. |
@@ -79,18 +79,19 @@ python3 Michael/bootstrap/provision.py
 | 6 | filter | `user_context.py` | User context filter ([functions.md](functions.md)). |
 | 7 | audit | `audit_log.py` | Audit event function ([functions.md](functions.md)). |
 | 8 | translator | `translator_tool.py` | Document Translator tool ([tools.md](tools.md)). |
-| 9 | kbtool | `kb_manager_tool.py` | Knowledge Base Manager tool ([knowledge.md](knowledge.md)). |
+| 9 | kbtool | `kb_manager_tool.py` | Knowledge Base Manager tool, installed but attached to no preset ([knowledge.md](knowledge.md)). |
 | 10 | office | `office_tools.py` | PowerPoint and Word generator tools ([tools.md](tools.md)). |
 | 10b | extensions | `extensions.py` | Managed tools and functions, explicit retirements ([tools.md](tools.md#managed-extensions)). |
 | 10c | skills | `skills.py` | Skills ([skills.md](skills.md)). |
 | 11 | knowledge | `knowledge_bases.py` | Knowledge bases and seed files. |
-| 12 | presets | `presets.py` | Presets, the review action, web search ([models.md](models.md)). |
+| 11b | terminal | `open_terminal.py` | Registers the Open Terminal connection and shares it with all users (`--access all`), which refuses unless the file API is confined ([terminal.md](terminal.md)). |
+| 12 | presets | `presets.py` | Presets, the review action, web search, the follow-up question prompt ([models.md](models.md)). |
 | 13 | branding | `branding.py` | Lenovo theme ([branding.md](branding.md)). |
 | 14 | employees | `seed_employees.py` | Only with `--employees FILE`. |
 | 15 | mail relay | `smtp_check.py` | Only with `MAIL_PROVIDER=smtp`; never sends mail. |
 | 16 | access | `access.py` | Read-only audit that everything is usable by all users ([accounts.md](accounts.md)). |
 
-The terminal is registered separately by `bootstrap/open_terminal.py` (see [terminal.md](terminal.md)).
+The terminal step runs before the presets so each preset's default terminal (`terminal_id`) exists; it can also be run alone (`bootstrap/open_terminal.py`, see [terminal.md](terminal.md)).
 
 Options: `--check` (read-only, exit 1 on drift), `--only a,b` and `--skip a,b` (step names above), `--employees FILE`,
 `--update-knowledge` (overwrite seed files edited in the app), `--env-file FILE`, `--starter-file PATH` (stage the
@@ -128,7 +129,7 @@ Placeholders live in `.env.example`; real values only in the private `.env`.
 | Terminal | `OPEN_TERMINAL_API_KEY`, `OPEN_TERMINAL_IMAGE` |
 | Translator | `TRANSLATOR_GATEWAY_URL`, `TRANSLATOR_API_KEY`, `TRANSLATOR_ID` |
 | Employee directory | `EMPLOYEE_DIRECTORY_SRC`, `EMPLOYEE_DIRECTORY_PORT`, `EMPLOYEE_DIRECTORY_MCP_URL`, `EMPLOYEE_MCP_API_KEY`, `EMPLOYEE_MCP_WRITE_TOOLS`, `EMPLOYEE_ADMIN_TOKEN`, `EMPLOYEE_WRITE_MCP_URL`, `EMPLOYEE_WRITE_MCP_API_KEY`, `EMPLOYEE_WRITE_MCP_TOOLS` |
-| Mail | `MAIL_SERVICE_SRC`, `MAIL_MCP_URL`, `MAIL_MCP_API_KEY`, `MAIL_PROVIDER`, `MAIL_SHARED_SENDER`, `MAIL_ALLOWED_DOMAINS`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USE_TLS`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `MAIL_SMTP_CA_FILE`, `MAIL_SMTP_TLS_VERIFY` |
+| Mail | `MAIL_SERVICE_SRC`, `MAIL_MCP_URL`, `MAIL_MCP_API_KEY`, `MAIL_PROVIDER`, `MAIL_MCP_ALLOW_SEND` (false by default; true lets a model send with `send_draft`), `MAIL_SHARED_SENDER`, `MAIL_ALLOWED_DOMAINS`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USE_TLS`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `MAIL_SMTP_CA_FILE`, `MAIL_SMTP_TLS_VERIFY` |
 | PATH | `PATH_MCP_URL`, `PATH_MCP_API_KEY` |
 | QDTS cases | `QDTS_CASES_SRC`, `QDTS_CASES_IMAGE`, `QDTS_MCP_V2_URL`, `QDTS_MCP_API_KEY`, `QDTS_CUSTOMER_NAMES`, `QDTS_DEVQDTS_DATA`, `QDTS_MAX_CHARS` (response budget, default 60,000 characters) |
 
@@ -151,9 +152,9 @@ matching file exists under `Michael/runtime/certs/`, and the real trust test is 
 failure usually means a wrong key or an untrusted or missing CA bundle.
 
 `bootstrap/xai_connection.py` adds xAI as a second OpenAI-compatible connection with the same conventions (and does
-nothing when `XAI_API_KEY` is empty). The approved base model is Nemotron 3 Ultra on the internal provider. With the
+nothing when `XAI_API_KEY` is empty). The approved base model is Laguna S 2.1 (`laguna-s-2.1`) on the internal provider. With the
 plain-name QDTS case integration installed, provisioning refuses an xAI key, a saved outside connection or a
-non-Nemotron preset base (`bootstrap/case_safety.py`); xAI is an outside service and gets only synthetic or approved
+preset base other than the approved model (`bootstrap/case_safety.py`); xAI is an outside service and gets only synthetic or approved
 data. These are provisioning protections, not runtime data-loss prevention.
 
 ## Backend overlay

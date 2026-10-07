@@ -12,8 +12,6 @@
     "case-assistant": ["name", "id"],
     "path": ["name", "id"],
     "web-searcher": ["name"],
-    "office-agent": ["name", "id", "email"],
-    "knowledge-base-manager": ["name"],
     "office-documents": ["name", "id", "email"],
     "bge-reranker-v2-m3": [],
     "llama-embed-nemotron-8b": []

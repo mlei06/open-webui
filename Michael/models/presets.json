@@ -1,7 +1,8 @@
 {
   "schemaVersion": 1,
-  "base_model": "nemotron-3-ultra",
+  "base_model": "laguna-s-2.1",
   "filter_ids": ["user_context"],
+  "retired": ["office-agent", "knowledge-base-manager"],
   "knowledge_bases": ["sops"],
   "actions": [
     {
@@ -32,20 +33,23 @@
       ],
       "actions": ["mail_review"],
       "capabilities": {
+        "vision": false,
         "file_upload": true,
         "file_context": false,
         "web_search": true,
         "image_generation": false,
         "code_interpreter": false,
         "terminal": true,
-        "memory": false,
+        "memory": true,
         "builtin_tools": true,
         "citations": true,
         "status_updates": true,
-        "usage": false
+        "usage": true
       },
-      "builtin_tools": ["time", "user_input", "web_search", "files"],
+      "builtin_tools": ["time", "user_input", "web_search", "files", "memory", "chats", "tasks", "automations"],
       "knowledge_bases": [],
+      "skills": ["qdts", "visualization", "web-search", "document-translation", "powerpoint", "delegation", "mail-drafting", "path-mailroom", "terminal-workspace"],
+      "terminal_id": "open-terminal",
       "default_features": ["web_search"],
       "params": {}
     },
@@ -58,6 +62,7 @@
       "tools": [{"server": "qdts"}, {"tool": "visuals_toolkit_v4"}, {"tool": "workspace_files"}],
       "knowledge_bases": [],
       "capabilities": {
+        "vision": false,
         "file_upload": false,
         "file_context": false,
         "web_search": false,
@@ -71,6 +76,8 @@
         "usage": false
       },
       "builtin_tools": ["time", "user_input"],
+      "skills": ["qdts", "visualization", "terminal-workspace"],
+      "terminal_id": "open-terminal",
       "default_features": [],
       "params": {"temperature": 0.2}
     },
@@ -83,6 +90,7 @@
       "tools": [{"server": "path"}],
       "knowledge_bases": [],
       "capabilities": {
+        "vision": false,
         "file_upload": false,
         "file_context": false,
         "web_search": false,
@@ -111,6 +119,7 @@
         {"tool": "workspace_files"}
       ],
       "capabilities": {
+        "vision": false,
         "file_upload": true,
         "file_context": false,
         "web_search": false,
@@ -124,6 +133,8 @@
         "usage": false
       },
       "builtin_tools": [],
+      "skills": ["document-translation"],
+      "terminal_id": "open-terminal",
       "default_features": [],
       "params": {"temperature": 0.2}
     },
@@ -135,6 +146,7 @@
       "prompt": "web-searcher.md",
       "tools": [],
       "capabilities": {
+        "vision": false,
         "file_upload": false,
         "file_context": false,
         "web_search": true,
@@ -148,64 +160,9 @@
         "usage": false
       },
       "builtin_tools": ["time", "web_search"],
+      "skills": ["web-search"],
       "default_features": ["web_search"],
       "params": {"temperature": 0.3}
-    },
-    {
-      "id": "office-agent",
-      "name": "Office Agent",
-      "icon": "office-agent.svg",
-      "description": "Finds colleagues in the employee directory and drafts email for you to review and send.",
-      "prompt": "office-agent.md",
-      "tools": [
-        {"server": "employee_directory"},
-        {"server": "mail"},
-        {"server": "path"},
-        {"tool": "workspace_files"}
-      ],
-      "actions": ["mail_review"],
-      "capabilities": {
-        "file_upload": true,
-        "file_context": false,
-        "web_search": false,
-        "image_generation": false,
-        "code_interpreter": false,
-        "terminal": false,
-        "memory": false,
-        "builtin_tools": true,
-        "citations": true,
-        "status_updates": true,
-        "usage": false
-      },
-      "builtin_tools": ["time", "user_input"],
-      "default_features": [],
-      "params": {"temperature": 0.3}
-    },
-    {
-      "id": "knowledge-base-manager",
-      "name": "Knowledge Base Manager",
-      "icon": "knowledge-base-manager.svg",
-      "description": "Creates, updates and organises your knowledge bases from files you attach (for example a new SOP). Asks before deleting or overwriting.",
-      "prompt": "knowledge-base-manager.md",
-      "tools": [
-        {"tool": "knowledge_base_manager"}
-      ],
-      "capabilities": {
-        "file_upload": true,
-        "file_context": false,
-        "web_search": false,
-        "image_generation": false,
-        "code_interpreter": false,
-        "terminal": false,
-        "memory": false,
-        "builtin_tools": true,
-        "citations": true,
-        "status_updates": true,
-        "usage": false
-      },
-      "builtin_tools": ["time", "user_input", "files"],
-      "default_features": [],
-      "params": {"temperature": 0.2}
     },
     {
       "id": "office-documents",
@@ -219,6 +176,7 @@
         {"tool": "workspace_files"}
       ],
       "capabilities": {
+        "vision": false,
         "file_upload": true,
         "file_context": true,
         "web_search": false,
@@ -232,6 +190,8 @@
         "usage": false
       },
       "builtin_tools": ["time", "user_input"],
+      "skills": ["powerpoint"],
+      "terminal_id": "open-terminal",
       "default_features": [],
       "params": {"temperature": 0.3}
     }

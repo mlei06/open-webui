@@ -19,7 +19,7 @@ service URLs, tokens, databases or user exports. See [deployment.md](deployment.
 | Functions: filters (user context), actions (review and send email), event functions (audit log), interface functions | [functions.md](functions.md) |
 | Open Terminal: setup, per-user homes, confinement, shared area, file delivery contract and download links | [terminal.md](terminal.md) |
 | Skills: the task guides models load on demand | [skills.md](skills.md) |
-| Knowledge bases (SOPs) and the Knowledge Base Manager tool | [knowledge.md](knowledge.md) |
+| Knowledge bases (SOPs) and the Knowledge Base Manager tool (attached to no preset) | [knowledge.md](knowledge.md) |
 | Accounts, roles, who can see what, access audit | [accounts.md](accounts.md) |
 | Lenovo theme, logo, fonts, contrast checks, rollback | [branding.md](branding.md) |
 

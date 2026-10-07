@@ -226,6 +226,24 @@ class TerminalSaveTest(unittest.IsolatedAsyncioTestCase):
             await wd._terminal_stat(self.context, 'workspace/output/nope.pdf')
 
 
+class TerminalImageErrorTest(unittest.IsolatedAsyncioTestCase):
+    async def test_a_missing_image_names_the_path_and_the_fix(self):
+        gone = AsyncMock(side_effect=ValueError('Terminal operation failed; inspect the current process before retrying'))
+        with patch.object(wd, '_terminal_file_call', gone):
+            with self.assertRaises(ValueError) as caught:
+                await wd._terminal_image(None, 'xseries_monthly_trend.png')
+        text = str(caught.exception)
+        self.assertIn("'xseries_monthly_trend.png'", text)
+        self.assertIn('workspace_path', text)
+        self.assertNotIn('inspect the current process', text)
+
+    async def test_other_failures_keep_their_own_message(self):
+        broken = AsyncMock(side_effect=ValueError('Terminal image must be a regular file'))
+        with patch.object(wd, '_terminal_file_call', broken):
+            with self.assertRaisesRegex(ValueError, 'regular file'):
+                await wd._terminal_image(None, 'assets/pipe')
+
+
 class ReadProgramTest(unittest.TestCase):
     """The terminal-side program that reads caller-owned files for slide images."""
 

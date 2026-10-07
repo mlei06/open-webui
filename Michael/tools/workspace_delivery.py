@@ -249,7 +249,15 @@ async def _terminal_file_call(context, payload):
 async def _terminal_image(context, path):
     import hashlib
     full, _ = _home_path(path)
-    info = await _terminal_file_call(context, {'op': 'stat', 'path': full, 'home': True})
+    try:
+        info = await _terminal_file_call(context, {'op': 'stat', 'path': full, 'home': True})
+    except ValueError as error:
+        if not str(error).startswith('Terminal operation failed'):
+            raise
+        raise ValueError(
+            f'No image was found at {path!r} in your terminal home. Use the exact workspace_path of an image that '
+            'exists there (returned by export_visual or publish_workspace_file, for example ~/workspace/output/chart.png); '
+            'a bare file name, /tmp and other users\' folders are not read.') from None
     if not 0 < info['size'] <= 15 * 1024 * 1024:
         raise ValueError('Terminal image must be between 1 byte and 15 MiB')
     data = bytearray()
@@ -461,6 +469,16 @@ data=fig.to_image(format=p['format'],width=p['width'],height=p['height'],scale=1
 if not 0<len(data)<=15*1024*1024:raise ValueError('Export exceeds image byte limit')
 with Image.open(BytesIO(data)) as im:
  im.verify()
+provenance=figure['layout'].get('meta',{}).get('source_metadata')
+if provenance:
+ from PIL.PngImagePlugin import PngInfo
+ out=BytesIO()
+ with Image.open(BytesIO(data)) as im:
+  description=json.dumps(provenance,ensure_ascii=False)
+  if p['format']=='png':
+   info=PngInfo();info.add_text('Source provenance',description);im.save(out,'PNG',pnginfo=info)
+  else:im.save(out,'JPEG',quality=92,comment=description.encode('utf-8'))
+ data=out.getvalue()
 ''' + _TERMINAL_WRITE_IMAGE + r'''print(json.dumps({'workspace_path':'~/'+'/'.join(dirs+[final]),'size':len(data),'sha256':hashlib.sha256(data).hexdigest(),'font':actual,'figure':figure,'warnings':[] if actual==expected else ['PowerPoint font '+expected+' is unavailable; export and browser use '+actual+' instead.']}))
 '''
 

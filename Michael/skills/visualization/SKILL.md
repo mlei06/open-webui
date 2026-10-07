@@ -5,6 +5,8 @@ description: How to draw charts, tables, dashboards and diagrams with the visual
 
 # Visualization: make it, then render it
 
+Always draw with the toolkit's `render_*` and `export_visual` tools, never with Python, matplotlib or a hand-built image in the terminal: those charts do not match the Lenovo style and their numbers are typed by hand. If the `render_*` tools are not in your tool list, say that the chart tool is not available to this user and ask them to contact the maintainer; offer a table instead of improvising.
+
 Two routes. Pick by where the numbers come from. `render_visualization` draws only `bar`, `line`, `heatmap`, `timeline`, `sequence` and `gantt` (a `pie`, `donut`, gauge, table, funnel, radar, sankey or waterfall is NOT one of them): for those, and for anything not from QDTS, use the matching `render_*` tool and then `export_visual`.
 
 | Route | When | Calls |
@@ -23,8 +25,8 @@ Never rebuild a visual by hand or paste its content into `export_visual`: it acc
    - Heatmaps: `row_labels`, `column_labels` and a rectangular `values` grid (null stays missing). Timelines: `events: [{label, date}]` (a `sequence` omits dates). Gantt: `tasks: [{label, start, end}]`.
    - `metadata`: the exact source, date basis, period, coverage and warnings (Other, Unknown, partial periods, overlapping participation). Never imply pre-2026 zeros or employee work dates.
    - `show_title: false` when the chart goes on a slide that has its own title.
-   - `width`/`height`, `picture_layout` and `format` are optional. An Open Terminal is **not** required: with none selected the image is rendered by a service and delivered as a download only.
-3. The result gives `download_url`, `file_id`, and (with a terminal selected) `workspace_path`, `terminal_download_url` and warnings. Tell the user the one download link, disclose font or coverage warnings, and keep `workspace_path` for reuse (below).
+   - `width`/`height`, `picture_layout` and `format` are optional; chat defaults to a readable 960 × 640 canvas. For a deck request its dimensions or `picture_layout: "Chart Slide"`. Full source, scope, dates and warnings remain in adjacent details and export provenance. An Open Terminal is **not** required: with none selected the image is rendered by a service and delivered as a download only.
+3. The result gives `download_url`, `file_id`, and (with a terminal selected) `workspace_path`, `terminal_download_url` and warnings. The interactive chart is the single primary preview, with an image fallback only when JavaScript is unavailable. Never repeat it as a Markdown image or emit another preview. Tell the user the one plain download link, disclose font or coverage warnings, and keep `workspace_path` for reuse (below).
 
 For long category lists use a horizontal bar chart; for many series use `bar_mode: stack`. Keep to the supplied order and keep Other and Unknown.
 

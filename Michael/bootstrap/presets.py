@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Idempotently create the Open WebUI model presets declared in models/presets.json.
 
-Each preset (Lenny, Document Translator, Web Searcher, Office Agent, Knowledge Base Manager, Office Documents)
+Each preset (Lenny, Case Assistant, PATH assistant, Document Translator, Web Searcher, Office Documents)
 is a custom model with its system prompt (prompts/<name>.md), the tool servers and workspace tools it may
 reach, capabilities, built-in tools, default features and the user-context filter
 already filled out. Through the authenticated admin API this script:
@@ -13,8 +13,7 @@ already filled out. Through the authenticated admin API this script:
      writing nothing when the live model already matches;
   4. installs the Action functions declared under "actions" (functions/<file>) and
      activates them, never globally: a preset gets one only through its "actions" list
-     (meta.actionIds). Today that is the "Review and send email" button of Lenny and
-     the Office Agent;
+     (meta.actionIds). Today that is the "Review and send email" button of Lenny;
   5. pushes the web search settings (web search on, engine perplexity_search, key from
      PERPLEXITY_API_KEY in Michael/.env) when they are not already saved: Open WebUI keeps
      saved settings in its database, which override the environment compose passes;
@@ -32,7 +31,7 @@ already filled out. Through the authenticated admin API this script:
      the preset works as soon as the connection exists.
 
 Base model: --base-model, else PRESETS_BASE_MODEL, else TRANSLATOR_BASE_MODEL from
-Michael/.env, else "base_model" in models/presets.json (nemotron-3-ultra).
+Michael/.env, else "base_model" in models/presets.json (laguna-s-2.1).
 
 Options: --check changes nothing and exits 1 when a preset differs; --base-model ID.
 --prompts-only updates existing presets' system text and refreshes the model cache,
@@ -69,6 +68,8 @@ BUILTIN_CATEGORIES = (
 FEATURES = ('web_search', 'image_generation', 'code_interpreter')
 # meta/params keys this script owns; every other key of a live model is left alone.
 META_KEYS = ('description', 'capabilities', 'builtinTools', 'toolIds', 'actionIds', 'filterIds', 'defaultFeatureIds')
+# Owned only when a preset declares them: the skills pre-selected in a new chat, and its default terminal.
+OPTIONAL_META_KEYS = ('skillIds', 'terminalId')
 # meta.knowledge is merged rather than owned: references a user added in the app are kept.
 
 
@@ -120,6 +121,10 @@ def load_presets(path=PRESETS_JSON, prompt_dir=PROMPT_DIR, function_dir=FUNCTION
     filters = doc.get('filter_ids')
     if not (isinstance(filters, list) and all(isinstance(f, str) and f for f in filters)):
         errors.append('filter_ids must be a list of function ids')
+    retired = doc.get('retired', [])
+    if not (isinstance(retired, list) and all(isinstance(r, str) and r for r in retired)):
+        errors.append('retired must be a list of preset ids')
+        retired = []
     actions = doc.get('actions', [])
     action_ids = set()
     if not isinstance(actions, list):
@@ -167,6 +172,11 @@ def load_presets(path=PRESETS_JSON, prompt_dir=PROMPT_DIR, function_dir=FUNCTION
         refs = p.get('tools')
         if not (isinstance(refs, list) and all(isinstance(r, dict) and len({'server', 'tool'} & set(r)) == 1 for r in refs)):
             errors.append(f'{where}: tools must be a list of {{"server": id}} or {{"tool": id}}')
+        skills = p.get('skills', [])
+        if not (isinstance(skills, list) and all(isinstance(k, str) and k for k in skills) and len(set(skills)) == len(skills)):
+            errors.append(f'{where}: skills must be a list of distinct skill ids')
+        if 'terminal_id' in p and not (isinstance(p['terminal_id'], str) and p['terminal_id'] and p.get('capabilities', {}).get('terminal') is True):
+            errors.append(f'{where}: terminal_id needs the terminal capability and a terminal connection id')
         used = p.get('actions', [])
         if not (isinstance(used, list) and all(a in action_ids for a in used)):
             errors.append(f'{where}: actions must be a list of ids declared under the top-level "actions"')
@@ -193,6 +203,8 @@ def load_presets(path=PRESETS_JSON, prompt_dir=PROMPT_DIR, function_dir=FUNCTION
         if not text:
             errors.append(f'{where}: prompt file is empty')
         out.append({**p, 'system': text, 'icon_svg': icon_svg, 'knowledge_bases': [kb_names[k] for k in kbs]})
+    if {x['id'] for x in out} & set(retired):
+        errors.append('a preset cannot also be retired')
     if errors:
         raise ConfigError(f'{path.name}: ' + '; '.join(errors))
     return doc, out
@@ -250,6 +262,8 @@ def desired_model(preset, base_model, filter_ids, kbs=None):
             'filterIds': list(filter_ids),
             'defaultFeatureIds': list(preset['default_features']),
             **({'knowledge': knowledge} if knowledge else {}),
+            **({'skillIds': list(preset['skills'])} if preset.get('skills') else {}),
+            **({'terminalId': preset['terminal_id']} if preset.get('terminal_id') else {}),
             **icon,
         },
         'params': {'function_calling': 'native', 'system': preset['system'], **preset['params']},
@@ -291,8 +305,21 @@ def matches(current, want, managed=frozenset()):
         and current.get('is_active') is True
         and ('user', '*', 'read') in grants_of(current)
         and all(meta.get(k) == want['meta'][k] for k in META_KEYS)
+        and all(meta.get(k) == want['meta'][k] for k in OPTIONAL_META_KEYS if k in want['meta'])
         and all(params.get(k) == v for k, v in want['params'].items())
     )
+
+
+def retire_presets(base, token, ids, apply):
+    """Delete the live preset rows of retired ids; returns the ids that existed. A user's own models are never named here."""
+    found = []
+    for pid in ids:
+        if get_model(base, token, pid) is None:
+            continue
+        found.append(pid)
+        if apply:
+            call(base, 'POST', '/api/v1/models/model/delete', token, {'id': pid})
+    return found
 
 
 def get_model(base, token, model_id):
@@ -452,19 +479,46 @@ def ensure_web_search(base, token, key, apply):
     return 'updated'
 
 
+FOLLOW_UP_PROMPT = MICHAEL_DIR / 'models' / 'follow-up-prompt.md'
+
+
+def follow_up_template():
+    """The follow-up question prompt (models/follow-up-prompt.md), checked for what Open WebUI needs from it."""
+    text = FOLLOW_UP_PROMPT.read_text().strip()
+    if '{{MESSAGES' not in text or '"follow_ups"' not in text:
+        raise ConfigError(f'{FOLLOW_UP_PROMPT.name} must contain {{{{MESSAGES:...}}}} and ask for a "follow_ups" JSON key')
+    return text
+
+
+def ensure_follow_up_prompt(base, token, template, apply):
+    """Returns 'unchanged' or 'updated'. The task config saves as a whole, so only this field is replaced."""
+    current = call(base, 'GET', '/api/v1/tasks/config', token)
+    if (current.get('FOLLOW_UP_GENERATION_PROMPT_TEMPLATE') or '').strip() == template:
+        return 'unchanged'
+    if apply:
+        call(base, 'POST', '/api/v1/tasks/config/update', token, {**current, 'FOLLOW_UP_GENERATION_PROMPT_TEMPLATE': template})
+    return 'updated'
+
+
 def registered_ids(base, token):
-    """(MCP connection ids, workspace tool ids, active filter function ids) currently in Open WebUI."""
+    """(MCP connection ids, workspace tool ids, active filter function ids, skill ids, terminal ids) currently in Open WebUI."""
     res = call(base, 'GET', '/api/v1/configs/tool_servers', token) or {}
     servers = {(c.get('info') or {}).get('id') for c in res.get('TOOL_SERVER_CONNECTIONS') or []}
     tools = {t.get('id') for t in call(base, 'GET', '/api/v1/tools/', token) or []}
     funcs = {f.get('id') for f in call(base, 'GET', '/api/v1/functions/', token) or [] if f.get('is_active')}
-    return servers, tools, funcs
+    skills = {k.get('id') for k in call(base, 'GET', '/api/v1/skills/', token) or []}
+    terminals = {c.get('id') for c in (call(base, 'GET', '/api/v1/configs/terminal_servers', token) or {}).get('TERMINAL_SERVER_CONNECTIONS') or []}
+    return servers, tools, funcs, skills, terminals
 
 
-def missing_refs(presets, filter_ids, servers, tools, funcs):
+def missing_refs(presets, filter_ids, servers, tools, funcs, skills=None, terminals=None):
     """[(preset id, kind, id, optional)] for referenced things that are not registered."""
     out = []
     for p in presets:
+        if skills is not None:
+            out += [(p['id'], 'skill', k, False) for k in p.get('skills', []) if k not in skills]
+        if terminals is not None and p.get('terminal_id') and p['terminal_id'] not in terminals:
+            out.append((p['id'], 'terminal connection', p['terminal_id'], False))
         for r in p['tools']:
             if 'server' in r and r['server'] not in servers:
                 out.append((p['id'], 'tool server', r['server'], bool(r.get('optional'))))
@@ -555,6 +609,17 @@ def run(argv=None):
             register_base_model(base, token, base_model)
             report(True, 'base model registered with public read grant')
 
+        what = ensure_follow_up_prompt(base, token, follow_up_template(), not args.check)
+        if what == 'unchanged':
+            report(True, 'follow-up question prompt already up to date')
+        elif args.check:
+            report(False, 'follow-up question prompt would be updated (run without --check)')
+        else:
+            report(True, 'follow-up question prompt updated')
+
+        for pid in retire_presets(base, token, doc.get('retired', []), not args.check):
+            report(not args.check, f'{pid}: retired preset ' + ('still exists (run without --check)' if args.check else 'deleted'))
+
         for a in doc.get('actions', []):
             changed = upsert_action(base, token, a, not args.check)
             if not changed:
@@ -599,6 +664,10 @@ def run(argv=None):
         for pid, kind, ref, optional in missing_refs(presets, doc['filter_ids'], *registered_ids(base, token)):
             if kind == 'filter function':
                 print(f'[NOTE] {pid}: filter "{ref}" is not installed or not active: run bootstrap/user_context.py')
+            elif kind == 'skill':
+                print(f'[NOTE] {pid}: skill "{ref}" is not installed yet: run bootstrap/skills.py, then this script again')
+            elif kind == 'terminal connection':
+                print(f'[NOTE] {pid}: terminal "{ref}" is not registered yet, so it cannot be the default terminal: run bootstrap/open_terminal.py')
             elif optional:
                 print(f'[NOTE] {pid}: optional {kind} "{ref}" is not registered yet; the preset uses it once it is (mcp_servers.py)')
             else:

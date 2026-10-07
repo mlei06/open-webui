@@ -153,6 +153,9 @@ services:
     environment:
       MAIL_PROVIDER: ${MAIL_PROVIDER:-mock}                         # mock | smtp
       MAIL_MCP_API_KEY: ${MAIL_MCP_API_KEY:-}                       # unset = /mcp refuses everything
+      # true adds the send_draft MCP tool: a model may then send the owner's own draft when the user (or a
+      # scheduled automation) explicitly says to. false (default) keeps the model channel draft-only.
+      MAIL_MCP_ALLOW_SEND: ${MAIL_MCP_ALLOW_SEND:-false}
       OWUI_URL: http://open-webui:8080
       MAIL_SHARED_SENDER: ${MAIL_SHARED_SENDER:-lenny@lenovo.com}
       MAIL_ALLOWED_DOMAINS: ${MAIL_ALLOWED_DOMAINS:-lenovo.com}

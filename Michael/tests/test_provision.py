@@ -266,7 +266,7 @@ class ProvisionTests(unittest.TestCase):
 
     def test_steps_follow_dependency_order(self):
         names = [s[0] for s in provision.STEPS]
-        order = ['accounts', 'davy', 'xai', 'mcp', 'filter', 'audit', 'translator', 'kbtool', 'office', 'extensions', 'skills', 'knowledge', 'presets', 'branding']
+        order = ['accounts', 'davy', 'xai', 'mcp', 'filter', 'audit', 'translator', 'kbtool', 'office', 'extensions', 'skills', 'knowledge', 'terminal', 'presets', 'branding']
         self.assertEqual(names, order)  # tools and knowledge exist before the presets that attach them
 
     def test_path_is_resolved_by_existing_mcp_stage_before_context_and_presets(self):

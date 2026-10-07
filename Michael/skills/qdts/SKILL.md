@@ -12,7 +12,7 @@ QDTS is the support-case tracking system. You reach it through a **read-only, in
 | Record | What is in it | Key facts |
 |---|---|---|
 | **Case** | number (QDTS-26-001234), title, AI summary, state, severity, product, customer, owning team, owner, created/changed/closed dates, participants, link | The AI summary is machine written and unverified. State is a snapshot, not history. |
-| **Note** | text, author, date, private/system flags, parent case | Private and system notes are included by default. Authors can be ambiguous or unresolved. |
+| **Note** | text, author, date, nullable source weekly flag, stream/capture provenance, private/system flags, parent case | Private and system notes are included by default. Authors can be ambiguous or unresolved. |
 | **Task** | name, details, creator, assigned team, start/due/stop dates, status, parent case | Only captured task rows. Task-created date and individual assignee do not exist. |
 | **People on a case** | owner, originator, previous owners, lifecycle owners, commenters, task creators | "Recorded participant" means involvement, not effort or hours. |
 | **Directories** | products (a hierarchy of series and models), customers, teams, employees | Duplicate names are separate identities. QDTS people are not an HR directory. |
@@ -51,29 +51,30 @@ Every result carries `index_revision`, `coverage`, `warnings`, exact `total` and
 
 ### Filters you can put on cases
 
-`query`, `query_mode`, `include_notes`, `case_ids`, `case_number` (+ `case_number_prefix`), `title`, `state` (`open`, `closed`, `any`, or an exact observed state: discover them with `aggregate_records` on `case_state`), `severity` (`critical`, `high`, `medium`, `low`, `info`, `high_or_worse`, `medium_or_worse`), `product`, `customer`, `owning_team`, `employees`, `created`, `changed`, `closed`, `idle_days_min`, `active_within_days`, `has_reported_open_tasks`, `has_note`, `has_task`.
+`query`, `query_mode`, `include_notes`, `case_ids`, `case_number` (+ `case_number_prefix`), `title`, `state` (`open`, `closed`, `any`, or an exact observed state: discover them with `aggregate_records` on `case_state`), `severity` (`critical`, `high`, `medium`, `low`, `info`, `high_or_worse`, `medium_or_worse`), `product`, `customer`, `owning_team`, `employees`, `created`, `changed`, `closed`, `idle_days_min`, `active_within_days`, `has_reported_open_tasks`, `has_note`, `has_task`, `weekly`.
 
 - **`query`** is literal, case-insensitive, whole-word matching over the title and the complete AI summary. By default ALL words must match. With **`query_mode: "any"`** at least one word must match, which is how you cover several keywords (wifi, wireless, bluetooth) in one call. There are no synonyms and no stemming: give every spelling you want. `include_notes: true` also lets the words match inside one note.
 - **`product`, `customer`, `owning_team`** are single selectors that take names or exact IDs:
   - a string = words that must all appear (`"thinkpad"` selects every ThinkPad product, because a product also matches the names of the series above it and its brand);
   - a list = ANY of its entries (`["thinkpad", "thinkcentre"]`, or exact IDs);
   - an object = `{"any": [...], "all": [...], "exclude": [...], "descendants": true}`.
-  An entry that is an exact ID selects that entry; anything else is a name match. A name that matches nothing returns zero with a warning: fix the spelling, do not widen the search. `owning_team` is the **current** owning team. The older `product_ids`, `customer_ids`, `owning_team_ids` still work and combine by AND.
+  An entry that is an exact ID selects that entry; anything else is a name match. A name that matches nothing returns zero with a warning: fix the spelling, do not widen the search.
+  - **Filtering to a series (or other group) you just aggregated**: a `case_product_series` bucket id (for example `7466`) is a SERIES id, and cases are attached to the models under it, so `product: "7466"` returns zero. Use `{"any": ["7466"], "descendants": true}` or the series name (`"X Series laptops (ThinkPad)"`). Never put a dimension name such as `case_product_series` inside a filter: filters take only the fields listed above. A zero total right after a successful grouped count of the same thing means the selector is wrong, not that there are no cases: fix it before reporting. `owning_team` is the **current** owning team. The older `product_ids`, `customer_ids`, `owning_team_ids` still work and combine by AND.
 - **`employees`**: `{ids: [id], role}`. `role` is `recorded_participant` (involved in any way, the default), `current_owner`, `originator`, `previous_owner`, `lifecycle_owner`, `commenter`, `task_creator`, `team_member`, `follower`. "My cases" is `current_owner` for owned and `recorded_participant` for involved.
 - **`has_note` / `has_task`**: all predicates must hold on ONE note or task of the case.
 - All filter fields AND together; lists inside a field OR.
 
 ### Note and task filters
 
-- Notes: `search_notes(filters={cases: {...case filters...}, note: {query, query_mode, author_ids, created, system}})`. `system: "exclude"` keeps human discussion only. `author_ids` come from an employee lookup; `author_name` is only for an exact full display name already seen. All note predicates must match the SAME note. A parent-case employee filter does not identify who wrote the matching note.
+- Notes: `search_notes(filters={cases: {...case filters...}, note: {query, query_mode, author_ids, created, system, weekly}})`. `system: "exclude"` keeps human discussion only. `author_ids` come from an employee lookup; `author_name` is only for an exact full display name already seen. All note predicates must match the SAME note. A parent-case employee filter does not identify who wrote the matching note.
 - Tasks: `search_tasks(filters={cases: {...}, task: {query, creator_ids, assigned_team_ids, status, started, due, completed}})`. `status` is `any`, `open`, `completed` or `overdue`. Creator is not the assignee; assigned team is not the case's owning team. A missing due date means overdue is unknown.
 
 ### Aggregation (`aggregate_records`)
 
 `request = {record_type: "case"|"note"|"task", filters: <the same filters as the matching search>, group_by: [1 to 3 dimensions]}`, plus `top_n` (default 10) and optional `sub_top_n`.
 
-- Case dimensions: `case_state`, `case_severity`, `case_owning_team`, `case_current_owner`, `case_participant`, `case_product`, `case_product_series`, `case_customer`, `case_created_week|month|year`, `case_closed_week|month|year`, `case_open_age_band`.
-- Note dimensions: `note_author`, `note_created_week|month|year`, plus the parent case's `case_owning_team`, `case_product`, `case_product_series`, `case_customer`, `case_state`, `case_severity`, `case_current_owner`, `case_participant`, `case_created_*`, `case_closed_*`.
+- Case dimensions: `case_state`, `case_severity`, `case_owning_team`, `case_current_owner`, `case_participant`, `case_product`, `case_product_series`, `case_customer`, `case_created_week|month|year`, `case_closed_week|month|year`, `case_open_age_band`, `case_weekly_cadence`, `case_weekly_this_week`.
+- Note dimensions: `note_weekly`, `note_author`, `note_created_week|month|year`, plus the parent case's `case_owning_team`, `case_product`, `case_product_series`, `case_customer`, `case_state`, `case_severity`, `case_current_owner`, `case_participant`, `case_created_*`, `case_closed_*`.
 - Task dimensions: `task_creator`, `task_assigned_team`, `task_status`, `task_overdue`, `task_started_*`, `task_due_*`, `task_completed_*`, plus the same parent-case dimensions.
 - At most one time dimension per call. Time buckets align across the range, unavailable periods are null, an interior zero means no indexed match, and the first and last buckets can be partial.
 - `top_n` keeps the largest categories and folds the rest into **Other**. With two or three dimensions it ranks all combinations together. **`sub_top_n`** switches to nested ranking: `top_n` values of the first dimension, and inside each only the `sub_top_n` largest combinations of the rest.
@@ -82,6 +83,7 @@ Every result carries `index_revision`, `coverage`, `warnings`, exact `total` and
 - Employee filters do not clip the other people grouped (`case_participant` still lists every coworker on the matching cases).
 - Employee case buckets use case dates, not work dates. `case_owning_team` is current ownership, not history. Recorded participation is not effort.
 - The result may include a `chart` object ready for the visualization skill.
+- **Only what the data has.** If the user asks to break down by something QDTS does not record (customer tier or segment, revenue, region, SLA), say it is not recorded and offer the nearest real dimension (customer, product series, owning team, severity, state). Do not build your own categories by hand-sorting names into groups, and never present such a grouping as a QDTS result.
 
 ## Reading people, cases and records in detail
 
@@ -187,3 +189,41 @@ There is no semantic clustering. Search `search_cases(filters: {product: "X"}, s
 ## Reporting
 
 Lead with the answer. Show case numbers as the returned links. Use a compact table for comparisons. Give exact counts with the date range and filters used, then the limits that matter (unknown dates or products, stale snapshot, overlap, partial boundary months). Keep raw JSON out of the reply. When a chart helps, hand off to the visualization skill rather than describing numbers twice.
+
+
+## Weekly notes and cadence
+
+Weekly identity comes only from the nullable source flag, never a reminder phrase.
+Use `search_notes(filters: {note: {weekly: true}}, limit: 0)` for an exact flagged-note count, or `search_cases(filters: {has_note: {weekly: true}})` for cases with an observed flagged note.
+All `has_note` predicates apply to the same note; `weekly: false` excludes unknown flags.
+Ordinary, MSD and SF streams keep distinct stable identities; MSD inclusion does not establish verified weekly-positive semantics, and SF was observed empty.
+Headers include `weekly`, `source_stream`, capture time/revision and original metadata.
+Retrieve complete original bodies through `get_records(kind: "note", ids: [...])`, following continuations before quoting or summarizing.
+
+For the latest MATCHING weekly note per case, use `search_notes(filters: {note: {weekly: true}}, latest_per_case: true)`.
+All author/text/date and parent-case predicates apply BEFORE reduction.
+`matching_note_total` counts every match before reduction; `total` and `distinct_case_total` count selected cases after reduction, before paging.
+An author filter can select an older matching note; it does not prove that author wrote the ACTUAL latest weekly note.
+Creation time determines recency, UTC when unspecified; ascending stable ID breaks equal-date ties.
+Known dates precede undated notes; `undated_matching_case_total` discloses cases whose true recency cannot be proved.
+Changing filters or `latest_per_case` invalidates a cursor; `INDEX_CHANGED` requires a new selection.
+
+Use case-level `weekly` facts from `search_cases` or `get_cases(view: "status")` for ACTUAL latest weekly notes, selected over all flagged notes before author/text/date filtering.
+Facts include latest note ID/time/author, exact calendar days since creation, cadence band, undated count, coverage and this-week status.
+Current owner and note author are different; neither proves historical ownership when a note was written.
+`filters.weekly` supports `status`, `days_min`, `days_max`, `this_week`, `freshness_days` and `latest_author_ids`.
+Resolve employee IDs first; `latest_author_ids` inspects actual latest and refuses uncertain recency.
+Case search, note/task parent filters and case aggregation reuse those predicates.
+For example, `search_cases(filters: {state: "open", weekly: {this_week: "no_observed"}}, limit: 0)` returns an exact snapshot-qualified absence count.
+Add an explicit user-chosen `freshness_days` for capture-age bounds; no universal compliance threshold exists.
+Never describe snapshot absence as a confirmed missed business obligation.
+
+Calculations use UTC calendar dates, Monday week start, and the entire date-only `as_of` day.
+`as_of` changes the reference date, never reconstructs historical state or ownership.
+Newly opened partial-week cases are marked explicitly.
+Cadence bands are 0–6, 7–13, 14–20 and 21+ days; no-observed, unknown-date, incomplete, stale and future anomalies remain distinct.
+Missing/failed/partial capture is unknown, distinct from a validated empty captured snapshot.
+Observed unpaged capture is snapshot evidence only; upstream completeness remains unverified.
+Normalized time/revision and index build time/revision describe materialization, not source freshness; raw and normalized revisions must agree.
+Use `aggregate_records(request: {record_type: "note", filters: {note: {weekly: true}}, group_by: ["note_created_week", "case_owning_team"]})` for exact weekly trends, or case dimensions `case_weekly_cadence` / `case_weekly_this_week` for case populations.
+Use whole-population totals and typed groups; never subtract paged note lists from paged cases to invent a missing-this-week count.

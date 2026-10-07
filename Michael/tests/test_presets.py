@@ -38,18 +38,35 @@ class DeclarationTests(unittest.TestCase):
     def test_presets_with_expected_ids(self):
         self.assertEqual(
             [x['id'] for x in PRESETS],
-            ['lenny', 'case-assistant', 'path', 'document-translator', 'web-searcher', 'office-agent', 'knowledge-base-manager', 'office-documents'],
+            ['lenny', 'case-assistant', 'path', 'document-translator', 'web-searcher', 'office-documents'],
         )
 
+    def test_office_agent_and_knowledge_base_manager_are_retired(self):
+        self.assertEqual(DOC['retired'], ['office-agent', 'knowledge-base-manager'])
+        self.assertTrue(not {'office-agent', 'knowledge-base-manager'} & set(BY_ID))
+        for pid in DOC['retired']:
+            self.assertNotIn(pid, json.loads((HERE / 'models' / 'user-context.json').read_text())['models'])
+
+    def test_retiring_deletes_only_existing_rows_and_check_deletes_nothing(self):
+        sent = []
+        orig = p.get_model, p.call
+        p.get_model = lambda b, t, i: {'id': i} if i == 'office-agent' else None
+        p.call = lambda b, m, path, t=None, body=None: sent.append((path, body))
+        try:
+            self.assertEqual(p.retire_presets('u', 't', ['office-agent', 'knowledge-base-manager'], False), ['office-agent'])
+            self.assertEqual(sent, [])
+            self.assertEqual(p.retire_presets('u', 't', ['office-agent', 'knowledge-base-manager'], True), ['office-agent'])
+        finally:
+            p.get_model, p.call = orig
+        self.assertEqual(sent, [('/api/v1/models/model/delete', {'id': 'office-agent'})])
+
     def test_default_base_model_is_nemotron_not_grok(self):
-        self.assertEqual(DOC['base_model'], 'nemotron-3-ultra')
+        self.assertEqual(DOC['base_model'], 'laguna-s-2.1')
 
     def test_tools_are_scoped_per_preset(self):
         ids = {k: want(k)['meta']['toolIds'] for k in BY_ID}
         self.assertEqual(ids['document-translator'], ['server:mcp:doctranslator', 'document_translator', 'workspace_files'])
         self.assertEqual(ids['web-searcher'], [])
-        self.assertEqual(ids['knowledge-base-manager'], ['knowledge_base_manager'])
-        self.assertEqual(ids['office-agent'], ['server:mcp:employee_directory', 'server:mcp:mail', 'server:mcp:path', 'workspace_files'])
         self.assertEqual(ids['office-documents'], ['generate_slide_pptx', 'generate_docx_documents', 'workspace_files'])
         self.assertEqual(
             set(ids['lenny']),
@@ -71,7 +88,7 @@ class DeclarationTests(unittest.TestCase):
         w = p.desired_model(BY_ID['path'], DOC['base_model'], FILTERS, {'SOPs': KB})
         self.assertEqual(w['id'], 'path')
         self.assertEqual(w['name'], 'PATH assistant')
-        self.assertEqual(w['base_model_id'], 'nemotron-3-ultra')
+        self.assertEqual(w['base_model_id'], 'laguna-s-2.1')
         self.assertEqual(w['meta']['toolIds'], ['server:mcp:path'])
         self.assertEqual(w['meta']['actionIds'], [])
         self.assertFalse(w['meta'].get('knowledge'))
@@ -79,7 +96,7 @@ class DeclarationTests(unittest.TestCase):
         for key in ('file_upload', 'file_context', 'web_search', 'code_interpreter', 'terminal', 'memory'):
             self.assertFalse(w['meta']['capabilities'][key], key)
         self.assertEqual({k for k in BY_ID if 'server:mcp:path' in want(k)['meta']['toolIds']},
-                         {'path', 'lenny', 'office-agent'})
+                         {'path', 'lenny'})
 
     def test_only_search_presets_get_web_search(self):
         for k in BY_ID:
@@ -104,13 +121,6 @@ class DeclarationTests(unittest.TestCase):
         on = {k for k, v in want('document-translator')['meta']['builtinTools'].items() if v}
         self.assertEqual(on, {'knowledge'})
 
-    def test_manager_enables_file_tools_and_disables_web_search(self):
-        m = want('knowledge-base-manager')['meta']
-        self.assertTrue(m['capabilities']['file_upload'])
-        self.assertFalse(m['capabilities']['file_context'])
-        self.assertTrue(m['builtinTools']['files'])
-        self.assertFalse(m['builtinTools']['web_search'])
-
     def test_servers_exist_in_mcp_json(self):
         declared = {s['id'] for s in json.loads((HERE / 'mcp' / 'mcp.json').read_text())['servers']}
         for x in PRESETS:
@@ -118,9 +128,9 @@ class DeclarationTests(unittest.TestCase):
                 if 'server' in r:
                     self.assertIn(r['server'], declared)
 
-    def test_mail_action_only_on_lenny_and_office(self):
+    def test_mail_action_only_on_lenny(self):
         for k in BY_ID:
-            on = k in ('lenny', 'office-agent')
+            on = k == 'lenny'
             self.assertEqual(want(k)['meta']['actionIds'], ['mail_review'] if on else [], k)
             self.assertEqual('server:mcp:mail' in want(k)['meta']['toolIds'], on, k)
 
@@ -133,7 +143,6 @@ class DeclarationTests(unittest.TestCase):
         for k in BY_ID:
             self.assertIn(k, cfg)
         self.assertEqual(cfg['web-searcher'], ['name'])
-        self.assertEqual(cfg['knowledge-base-manager'], ['name'])
 
     def test_office_documents_preset(self):
         w = want('office-documents')
@@ -167,7 +176,7 @@ class KnowledgeTests(unittest.TestCase):
             self.assertTrue(w['meta']['builtinTools']['knowledge'], k)
 
     def test_base_that_does_not_exist_yet_is_not_attached_but_the_tool_is_on(self):
-        w = want('office-agent')
+        w = want('office-documents')
         self.assertNotIn('knowledge', w['meta'])
         self.assertTrue(w['meta']['builtinTools']['knowledge'])
 
@@ -196,7 +205,7 @@ class KnowledgeTests(unittest.TestCase):
         self.assertEqual(sent[1]['meta']['knowledge'], [])
 
     def test_user_added_knowledge_is_kept_and_a_missing_attachment_is_detected(self):
-        w = p.desired_model(BY_ID['office-agent'], 'base-x', FILTERS, {'SOPs': KB})
+        w = p.desired_model(BY_ID['office-documents'], 'base-x', FILTERS, {'SOPs': KB})
         live = json.loads(json.dumps(w))
         self.assertTrue(p.matches(live, w))
         live['meta']['knowledge'].append({'id': 'mine', 'name': 'Mine', 'type': 'collection'})
@@ -293,7 +302,7 @@ class MatchTests(unittest.TestCase):
     def test_missing_refs_notes_unregistered_mail(self):
         tools = {'document_translator', 'knowledge_base_manager', 'generate_slide_pptx', 'generate_docx_documents', 'visuals_toolkit_v4', 'delegate_agents', 'workspace_files'}
         got = p.missing_refs(PRESETS, FILTERS, {'doctranslator', 'employee_directory', 'qdts', 'path'}, tools, {'user_context'})
-        self.assertEqual({(a, c, d) for a, _, c, d in got}, {('lenny', 'mail', False), ('office-agent', 'mail', False)})
+        self.assertEqual({(a, c, d) for a, _, c, d in got}, {('lenny', 'mail', False)})
         got = p.missing_refs(PRESETS, FILTERS, {'mail'}, set(), set())
         self.assertTrue(any(k == 'filter function' for _, k, _, _ in got))
         self.assertTrue(any(k == 'workspace tool' and not o for _, k, _, o in got))
@@ -464,6 +473,113 @@ class WebSearchTests(unittest.TestCase):
     def test_changed_key_is_detected(self):
         web = {'ENABLE_WEB_SEARCH': True, 'WEB_SEARCH_ENGINE': 'perplexity_search', 'PERPLEXITY_API_KEY': 'old'}
         self.assertIsNotNone(p.web_search_form({'web': web}, 'new'))
+
+
+class FollowUpPromptTests(unittest.TestCase):
+    def test_the_committed_prompt_has_what_open_webui_needs_and_names_lennys_abilities(self):
+        text = p.follow_up_template()
+        self.assertIn('{{MESSAGES:END:6}}', text)
+        self.assertIn('"follow_ups"', text)
+        for ability in ('case data', 'charts', 'PowerPoint', 'email', 'translate', 'web'):
+            self.assertIn(ability, text, ability)
+        self.assertIn('Draft an email', text)           # email is suggested as a draft, never as an unprompted send
+        self.assertNotIn('send an email to', text.lower())
+        self.assertLess(len(text), 4500)
+
+    def test_a_template_without_the_chat_history_or_the_json_key_is_refused(self):
+        original = p.FOLLOW_UP_PROMPT
+        try:
+            for bad in ('no history, "follow_ups"', 'history {{MESSAGES:END:6}} but no key'):
+                tmp = Path(tempfile.mkdtemp()) / 'x.md'
+                tmp.write_text(bad)
+                p.FOLLOW_UP_PROMPT = tmp
+                with self.assertRaises(p.ConfigError):
+                    p.follow_up_template()
+        finally:
+            p.FOLLOW_UP_PROMPT = original
+
+    def test_only_the_follow_up_field_is_replaced_and_a_second_run_changes_nothing(self):
+        live = {'TASK_MODEL': '', 'ENABLE_FOLLOW_UP_GENERATION': True, 'FOLLOW_UP_GENERATION_PROMPT_TEMPLATE': 'old', 'ENABLE_TITLE_GENERATION': True}
+        calls = []
+
+        def fake(base, method, route, token=None, body=None):
+            calls.append((method, route, body))
+            if method == 'GET':
+                return dict(live)
+            live.update(body)
+            return dict(live)
+
+        original = p.call
+        p.call = fake
+        try:
+            self.assertEqual(p.ensure_follow_up_prompt('b', 't', 'new', apply=False), 'updated')
+            self.assertEqual([c for c in calls if c[0] == 'POST'], [])        # --check writes nothing
+            self.assertEqual(p.ensure_follow_up_prompt('b', 't', 'new', apply=True), 'updated')
+            posted = [c for c in calls if c[0] == 'POST'][0]
+            self.assertEqual(posted[1], '/api/v1/tasks/config/update')
+            self.assertEqual(posted[2]['FOLLOW_UP_GENERATION_PROMPT_TEMPLATE'], 'new')
+            self.assertEqual((posted[2]['TASK_MODEL'], posted[2]['ENABLE_TITLE_GENERATION']), ('', True))  # everything else carried over
+            self.assertEqual(p.ensure_follow_up_prompt('b', 't', 'new', apply=True), 'unchanged')
+        finally:
+            p.call = original
+
+
+class SkillsAndTerminalTests(unittest.TestCase):
+    def test_the_skills_a_preset_preselects_are_the_ones_its_prompt_names(self):
+        import re as _re
+        known = {d.name for d in (p.MICHAEL_DIR / 'skills').iterdir() if d.is_dir()}
+        for preset in PRESETS:
+            text = (p.PROMPT_DIR / preset['prompt']).read_text()
+            named = set(_re.findall(r'^- ([a-z-]+): ', text, _re.M)) | set(_re.findall(r'load the ([a-z-]+) skill', text))
+            self.assertEqual(set(preset.get('skills', [])), named & known if named else set(), preset['id'])
+            self.assertLessEqual(set(preset.get('skills', [])), known, preset['id'])
+
+    def test_lenny_preselects_all_nine_skills_and_the_default_terminal(self):
+        meta = want('lenny')['meta']
+        self.assertEqual(len(meta['skillIds']), 9)
+        self.assertEqual(meta['terminalId'], 'open-terminal')
+
+    def test_every_preset_with_the_terminal_capability_has_it_selected_by_default(self):
+        for preset in PRESETS:
+            on = preset['capabilities'].get('terminal') is True
+            self.assertEqual(want(preset['id'])['meta'].get('terminalId'), 'open-terminal' if on else None, preset['id'])
+
+    def test_a_preset_without_skills_or_terminal_declares_neither(self):
+        meta = want('path')['meta']
+        self.assertNotIn('skillIds', meta); self.assertNotIn('terminalId', meta)
+
+    def test_lenny_has_the_chat_helpers_enabled(self):
+        meta = want('lenny')['meta']
+        for category in ('automations', 'tasks', 'chats', 'memory'):
+            self.assertTrue(meta['builtinTools'][category], category)
+        self.assertTrue(meta['capabilities']['memory'])
+        self.assertFalse(meta['capabilities']['file_context'])      # translation reads files server side; Lenny reads others on demand
+        self.assertIs(meta['capabilities']['vision'], False)       # nemotron-3-ultra rejects images; the editor would otherwise default vision to on
+        self.assertFalse(meta['builtinTools']['subagents'])         # delegate_agents is the one delegation tool
+
+    def test_drift_in_skills_or_default_terminal_is_detected_and_repaired(self):
+        live = json.loads(json.dumps(want('lenny')))
+        self.assertTrue(p.matches(live, want('lenny')))
+        for mutate in (lambda m: m['meta'].pop('skillIds'), lambda m: m['meta'].update(skillIds=['qdts']),
+                       lambda m: m['meta'].pop('terminalId'), lambda m: m['meta'].update(terminalId='other')):
+            m = json.loads(json.dumps(want('lenny')))
+            mutate(m)
+            self.assertFalse(p.matches(m, want('lenny')))
+
+    def test_bad_skill_or_terminal_declarations_are_rejected(self):
+        for change in (lambda d: d['presets'][0].update(skills='qdts'), lambda d: d['presets'][0].update(skills=['qdts', 'qdts']),
+                       lambda d: d['presets'][2].update(terminal_id='open-terminal'),     # PATH assistant has no terminal capability
+                       lambda d: d['presets'][0].update(terminal_id='')):
+            doc = json.loads(p.PRESETS_JSON.read_text())
+            change(doc)
+            with self.assertRaises(p.ConfigError):
+                load(doc)
+
+    def test_missing_skills_and_terminals_are_reported_but_not_when_unknown(self):
+        got = p.missing_refs(PRESETS, FILTERS, {'doctranslator', 'employee_directory', 'qdts', 'path', 'mail'}, {'document_translator', 'knowledge_base_manager', 'generate_slide_pptx', 'generate_docx_documents', 'visuals_toolkit_v4', 'delegate_agents', 'workspace_files'}, {'user_context'}, skills={'qdts'}, terminals=set())
+        kinds = {(a, b) for a, b, _, _ in got}
+        self.assertIn(('lenny', 'skill'), kinds); self.assertIn(('lenny', 'terminal connection'), kinds)
+        self.assertNotIn('skill', {b for a, b, _, _ in p.missing_refs(PRESETS, FILTERS, set(), set(), set())})
 
 
 if __name__ == '__main__':

@@ -139,6 +139,27 @@ class TemplateTests(unittest.TestCase):
         self.assertEqual(prs.slides[0].shapes.title.text, 'Exact title')
         self.assertEqual(prs.slides[0].placeholders[1].text, 'One\nTwo')
 
+    def test_typed_bullets_and_blank_lines_do_not_double_or_empty_the_template_bullets(self):
+        body = 'Intro sentence.\n\nKey points:\n\u2022 first\n- second\n* third\n\n\u2013 fourth\n5% growth\n-5 is negative'
+        prs, _ = self.build([{'template_layout': 'Title and Content', 'title': 'T', 'body': body},
+                             {'template_layout': 'Title and Content', 'title': 'U', 'bullets': ['\u2022 a', {'text': '- b', 'level': 1}, '  ']}])
+        self.assertEqual(prs.slides[0].placeholders[1].text,
+                         'Intro sentence.\nKey points:\nfirst\nsecond\nthird\nfourth\n5% growth\n-5 is negative')
+        self.assertEqual(prs.slides[1].placeholders[1].text, 'a\nb')
+        self.assertEqual(prs.slides[1].placeholders[1].text_frame.paragraphs[1].level, 1)
+        empty, _ = self.build([{'template_layout': 'Title and Content', 'title': 'T', 'body': '\n\u2022\n'}])
+        self.assertEqual(empty.slides[0].placeholders[1].text, '')
+
+    def test_house_style_fields_the_template_cannot_draw_are_reported_not_silently_dropped(self):
+        spec = {'title': 'Deck', 'theme': 'lenovo', 'slides': [
+            {'layout': 'cover', 'title': 'Cover', 'eyebrow': 'PART I', 'chips': ['a']},
+            {'template_layout': 'Title and Content', 'title': 'Fine', 'body': 'x'}]}
+        data, _ = self.tool._build(spec)
+        notes = spec['_layout_warnings']
+        self.assertTrue(any('theme' in n for n in notes), notes)
+        self.assertTrue(any(n.startswith('Slide 1:') and 'eyebrow' in n and 'chips' in n for n in notes), notes)
+        self.assertFalse(any(n.startswith('Slide 2:') for n in notes), notes)
+
     def test_native_chart_and_table_are_editable(self):
         prs, _ = self.build([
             {'template_layout': 'Chart Slide', 'title': 'Data', 'labels': ['A', 'B'], 'values': [2, 3], 'chart_type': 'bar'},

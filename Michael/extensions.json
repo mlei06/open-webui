@@ -6,7 +6,7 @@
       "id": "visuals_toolkit_v4",
       "name": "Visuals Toolkit V4",
       "file": "tools/visuals_toolkit_v4.py",
-      "access_grants": []
+      "access_grants": [{"principal_type": "user", "principal_id": "*", "permission": "read"}]
     },
     {
       "kind": "tools",

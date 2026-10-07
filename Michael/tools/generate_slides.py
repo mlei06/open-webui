@@ -1980,9 +1980,31 @@ def _starter_catalog(prs):
     ]} for layout in _starter_layouts(prs)]
 
 
+_BULLET_GLYPHS = re.compile(r'^\s*(?:[\u2022\u25cf\u25cb\u25aa\u25ab\u25e6\u2023\u2043\u00b7\u2013\u2014*-])(?:\s+|$)')
+
+
+def _plain_rows(rows):
+    """Rows without typed bullet glyphs or blank lines.
+
+    The starter's body placeholders draw their own bullets, so a typed "•" shows twice, and a blank line
+    would become an empty bullet. A row that is only a glyph is dropped; if nothing is left, one empty row stays.
+    """
+    out = []
+    for row in rows:
+        if isinstance(row, dict):
+            text = _BULLET_GLYPHS.sub('', str(row.get('text', '')), count=1)
+            if text.strip():
+                out.append({**row, 'text': text})
+        else:
+            text = _BULLET_GLYPHS.sub('', str(row), count=1)
+            if text.strip():
+                out.append(text)
+    return out or ['']
+
+
 def _placeholder_text(shape, value):
     """Keep inherited type, geometry, theme and paragraph styles editable."""
-    rows = value if isinstance(value, list) else str(value).split('\n')
+    rows = _plain_rows(value if isinstance(value, list) else str(value).split('\n'))
     tf = shape.text_frame
     tf.clear()
     for i, row in enumerate(rows):
@@ -2355,6 +2377,24 @@ def _fit_native_text(shape, maximum=22, minimum=14):
         paragraph.line_spacing = 1.0
 
 
+_STARTER_IGNORED_SLIDE_FIELDS = ('eyebrow', 'chips', 'number', 'icon', 'stats', 'steps', 'items', 'nodes', 'badge', 'contact', 'takeaways')
+_STARTER_IGNORED_DECK_FIELDS = ('theme', 'accent', 'footer', 'palette', 'heading_font', 'body_font')
+
+
+def _report_ignored_fields(spec, slides, report):
+    """Tell the caller which house-style fields the starter template does not draw (they were silently dropped)."""
+    deck = [k for k in _STARTER_IGNORED_DECK_FIELDS if spec.get(k)]
+    if deck:
+        report.append('Deck fields ' + ', '.join(deck) + ' are not used: the starter template supplies the theme, fonts and colours.')
+    for number, data in enumerate(slides, 1):
+        if str(data.get('template_layout') or '').startswith('Closing Slide'):
+            continue
+        ignored = [k for k in _STARTER_IGNORED_SLIDE_FIELDS if data.get(k)]
+        if ignored:
+            report.append(f'Slide {number}: {", ".join(ignored)} are not drawn by the starter template. Use template_layout with '
+                          'title, subtitle, body or bullets[], columns[] or placeholders{} (see get_slide_layouts).')
+
+
 def _prepare_starter_slides(prs, raw_slides, report):
     """Turn recoverable capacity mismatches into content-preserving slides."""
     result=[]
@@ -2445,6 +2485,7 @@ def _build_starter(encoded, spec):
         raise ValueError('Template decks require 1–100 slide objects in slides[]')
     report = spec['_layout_warnings'] = list(spec.get('_layout_warnings') or [])
     raw_slides = _prepare_starter_slides(prs, raw_slides, report)
+    _report_ignored_fields(spec, raw_slides, report)
     # Validate layout choices before creating anything. Starter slides are usage
     # instructions, not content to copy into the user's generated presentation.
     layouts = [_starter_layout(prs, data) for data in raw_slides]
@@ -2917,8 +2958,19 @@ class Tools:
           "slides": [ { "layout": "...", ... }, ... ]
         }
 
-        Each slide has a `layout` and fields consistent with that layout. Common
-        fields: `title`, `eyebrow` (kicker, e.g. "PART I"), `subtitle`.
+        WHEN get_slide_layouts reports mode "template" (the normal case here), build every
+        slide with `template_layout` set to an exact name it lists, and only these fields:
+        title, subtitle, body or bullets[], columns[{heading, bullets[]}], placeholders{},
+        headers/rows (table), chart fields, terminal_image_path, notes. Write bullets as
+        plain text: the layout draws the bullet, so never type "•", "-" or "*" and never
+        use blank lines (they are removed). A chapter divider is the "Section Header" layout
+        with title and subtitle. The `layout` aliases, `theme`, eyebrow, chips, number,
+        stats, icons and the list below belong to the legacy house style and are ignored
+        (and reported in layout_adjustments) when a starter template is installed.
+
+        LEGACY house style only (no starter template). Each slide has a `layout` and
+        fields consistent with that layout. Common fields: `title`, `eyebrow`
+        (kicker, e.g. "PART I"), `subtitle`.
 
         AVAILABLE LAYOUTS and main fields:
         - "cover":        title, subtitle, author, eyebrow, icon, date, chips[]

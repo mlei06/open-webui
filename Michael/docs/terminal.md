@@ -55,8 +55,9 @@ On a fresh deployment start Open WebUI before registering. Never use `down -v`.
 
 ## Use and access
 
-Select **Open Terminal** from the chat's terminal selector (explicit per chat) in Lenny, Case Assistant, Office
-Documents or Document Translator. The integration supplies its own tool instructions. Uploaded chat files keep Open
+Those four presets select **Open Terminal** automatically in a new chat (`terminal_id` in `presets.json`, written to the
+model's `meta.terminalId` by `presets.py`, only when the terminal is registered); the user can still change it in the chat's
+terminal selector, and nobody has to pick the running instance in the model settings. The integration supplies its own tool instructions. Uploaded chat files keep Open
 WebUI's default upload handling; terminal files are a separate store. The connection's `chat_uploads: filesystem`
 option is deliberately **not** used: it would send attachments only to the terminal and bypass the file store that the
 translator and delegation read. Access is the connection's permission under Admin Settings > Integrations > Open

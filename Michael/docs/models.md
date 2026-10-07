@@ -9,7 +9,7 @@ has run.
 ## The presets
 
 All eight presets use native function calling, the `user_context` filter ([functions.md](functions.md)) and the base
-model `nemotron-3-ultra` on the internal provider. All have public read access (users see them in the model
+model `laguna-s-2.1` on the internal provider. All have public read access (users see them in the model
 selector).
 
 | Preset (id) | Purpose | Web search | Terminal | Knowledge (SOPs) |
@@ -19,29 +19,27 @@ selector).
 | **PATH assistant** (`path`) | Read-only packages, checked-in mail and custody history | off | no | none |
 | **Document Translator** (`document-translator`) | Translates attached documents and returns the file | off | yes | yes |
 | **Web Searcher** (`web-searcher`) | Public research with cited sources | on by default | no | yes |
-| **Office Agent** (`office-agent`) | Employee directory, PATH, reviewable mail drafts | off | no | yes |
-| **Knowledge Base Manager** (`knowledge-base-manager`) | Turns attached files into knowledge-base entries | off | no | yes |
 | **Office Documents** (`office-documents`) | Lenovo-styled PowerPoint decks and Word documents | off | yes | yes |
 
 ### What each preset has attached
 
-| Tool or connection | Lenny | Case Assistant | PATH | Doc Translator | Web Searcher | Office Agent | KB Manager | Office Documents |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| QDTS cases (`qdts`) | x | x | | | | | | |
-| PATH (`path`) | x | | x | | | x | | |
-| Mail drafts (`mail`) and the review-and-send action | x | | | | | x | | |
-| Employee directory (`employee_directory`) | | | | | | x | | |
-| Translator gateway (`doctranslator`) and Document Translator tool | x | | | x | | | | |
-| PowerPoint (`generate_slide_pptx`) and Word (`generate_docx_documents`) generators | x | | | | | | | x |
-| Visuals toolkit (`visuals_toolkit_v4`) | x | x | | | | | | |
-| Workspace files (`workspace_files`) | x | x | | x | | x | | x |
-| Delegation (`delegate_agents`) | x | | | | | | | |
-| Knowledge Base Manager tool | | | | | | | x | |
-| Built-in tools | time, user input, files, web search | time, user input | time, user input | knowledge | time, web search, knowledge | time, user input, knowledge | time, user input, files, knowledge | time, user input, knowledge |
+| Tool or connection | Lenny | Case Assistant | PATH | Doc Translator | Web Searcher | Office Documents |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|
+| QDTS cases (`qdts`) | x | x | | | | |
+| PATH (`path`) | x | | x | | | |
+| Mail drafts (`mail`) and the review-and-send action | x | | | | | |
+| Translator gateway (`doctranslator`) and Document Translator tool | x | | | x | | |
+| PowerPoint (`generate_slide_pptx`) and Word (`generate_docx_documents`) generators | x | | | | | x |
+| Visuals toolkit (`visuals_toolkit_v4`) | x | x | | | | |
+| Workspace files (`workspace_files`) | x | x | | x | | x |
+| Delegation (`delegate_agents`) | x | | | | | |
+| Built-in tools | time, user input, files, web search, memory, chat history, tasks, automations | time, user input | time, user input | knowledge | time, web search, knowledge | time, user input, knowledge |
 
 Per-preset notes:
 
-- **Lenny** has no employee directory and no knowledge bases: people, roles and teams come from QDTS. Its usage
+- **Lenny** also has the built-in memory, chat-history, task-management and automation tools, and the memory capability. They
+  let it remember a user's team and preferences, search their own past chats, show a step checklist on long requests, and
+  schedule recurring runs from chat (see "Capabilities and defaults" below). It has no employee directory and no knowledge bases: people, roles and teams come from QDTS. Its usage
   guides are skills ([skills.md](skills.md)). Delegation targets are the other presets the user can access.
 - **Case Assistant** is read-only: no web, mail, directory or knowledge actions. It has the terminal for chart
   images and the visuals toolkit.
@@ -50,12 +48,11 @@ Per-preset notes:
 - **Document Translator** has file context off: the model sees only an `<attached_files>` tag and the tool reads
   the file server-side ([tools.md](tools.md#document-translator)).
 - **Office Documents** has file context on (chat files are source material).
-- **Knowledge Base Manager** deletes only after the user's own confirmation ([knowledge.md](knowledge.md)).
 
 ### Declaration format
 
 `models/presets.json` holds `schemaVersion`, `base_model`, `filter_ids`, the top-level `knowledge_bases` default
-(today `["sops"]`, an id from `knowledge/manifest.json`), `actions`, and the `presets` list. Each preset has `id`,
+(today `["sops"]`, an id from `knowledge/manifest.json`), `actions`, `retired` (preset ids the bootstrap deletes from the app, today `office-agent` and `knowledge-base-manager`; `--check` fails while one still exists) and the `presets` list. Each preset has `id`,
 `name`, `icon`, `description`, `prompt`, `tools` (entries `{"server": id}` for MCP connections or `{"tool": id}`
 for workspace tools), `actions`, `capabilities`, `builtin_tools`, `default_features`, optional `knowledge_bases`
 override and `params`. A preset sets `knowledge_bases: []` to have none (Lenny, Case Assistant, PATH assistant).
@@ -77,10 +74,51 @@ Run order matters because presets attach other resources: `mcp_servers.py`, `use
 `knowledge_bases.py`, `kb_manager_tool.py`, `office_tools.py`, `extensions.py`, `skills.py`, then `presets.py`.
 `provision.py` does this. Missing tools or a missing filter are reported as NOTEs.
 
+### Capabilities and defaults
+
+Each preset declares every capability that matters, so the model editor cannot silently change it: a capability left
+undeclared is shown as on by default when someone saves the model in the editor (that is how `vision` once flipped on).
+
+| Setting | Lenny | Why |
+|---|---|---|
+| `vision` | **off, on every preset** | The base model rejects images ("not a multimodal model"); declared explicitly so an editor save cannot turn it on |
+| `file_upload` | on | Translation, deck sources, mail attachments |
+| `file_context` | **off** | With it on, Open WebUI extracts and injects every attached file into the model's context on every turn. Off, the model reads an attachment on demand (`list_chat_files`, `view_file`, `query_chat_files`, `grep_chat_files`, confirmed live) and the translation tool reads the file server-side without the text ever entering the context. Office Documents turns it on because chat files are its source material |
+| `web_search` (default on) | on | Quick lookups direct; heavy research delegated |
+| `terminal` | on | Charts, files, decks ([terminal.md](terminal.md)) |
+| `memory` | **on**, with the `memory` built-in | Remember a user's team, usual period and recipients; private to each user, adds tokens, can go stale |
+| `citations`, `status_updates` | on | Sources and progress |
+| `usage` | **on** | Sends `stream_options: {include_usage: true}`; the provider returns token counts, stored on each message and shown in the UI |
+| `image_generation`, `code_interpreter` | off | No image engine; code interpreter needs a live browser session (the terminal covers code) |
+
+Built-in categories on for Lenny: time, user input, files, web search, **memory, chat history (`chats`), task management
+(`tasks`) and automations**. Off on purpose: notes, knowledge (retired for Lenny), channels, notifications, calendar,
+image generation, code interpreter and **sub-agents** (the native `delegate_task` always runs the parent's own model and
+tools and would overlap `delegate_agents`).
+
+**Automations are granted to every user** by `accounts.py` (default permission `features.automations`). A scheduled run
+executes as its owner with the preset's tool list ([mcp.md](mcp.md#mail)) and the preset's default terminal, so with
+`send_draft` on it can send mail as that user. No limits are set (`AUTOMATION_MAX_COUNT`, `AUTOMATION_MIN_INTERVAL` are
+empty), so a user could schedule many or very frequent runs; set them in Admin Settings if that matters.
+
+**Request size.** With `usage` on, a plain "say hello" to Lenny reports about 51,600 prompt tokens: tool schemas and the
+skill manifest dominate every request. Measure before and after any change to tools or descriptions.
+
+**Skills and the default terminal are declared per preset.** `skills` (a list of skill ids) becomes `meta.skillIds`: the
+model editor's Skills section shows them and the chat UI pre-selects them for each new chat. With built-in tools on,
+Open WebUI lists every skill the user can read to every model anyway, so the selection is a visible, explicit statement of
+which skills a preset is meant to use, not a different behaviour ([skills.md](skills.md#how-the-models-see-them)). A preset's
+list equals the skills its prompt names (a test enforces it): Lenny has all nine; Case Assistant `qdts`, `visualization`,
+`terminal-workspace`; Web Searcher `web-search`; Document Translator `document-translation`; Office Documents `powerpoint`.
+`terminal_id` (`open-terminal`, the id `open_terminal.py` registers) becomes `meta.terminalId`: the chat selects that
+terminal automatically when it is available, so nobody has to open the model settings and pick the running instance. It
+needs the terminal capability and is used by automations too. A missing skill or unregistered terminal is a NOTE from
+`presets.py`; `--check` reports drift in either.
+
 ### Base model
 
 One setting is used by every preset and by the translator tool: `--base-model`, else `PRESETS_BASE_MODEL`, else
-`TRANSLATOR_BASE_MODEL` in `.env`, else `nemotron-3-ultra` from `presets.json`. With the plain-name QDTS case
+`TRANSLATOR_BASE_MODEL` in `.env`, else `laguna-s-2.1` from `presets.json`. With the plain-name QDTS case
 integration installed, these may not select a different base, and provisioning refuses an xAI key or an outside saved
 connection ([deployment.md](deployment.md#model-providers)). A non-admin user cannot use a preset whose base model has
 no registered row with a public read grant; the bootstrap registers it.
@@ -103,6 +141,32 @@ anything else) and stores the data URI. `meta.preset_icon` records the SVG and r
 image written, so `--check` notices a missing, outdated or replaced image. Add `branding/icons/<id>.svg` and set
 `"icon": "<id>.svg"` for a new preset; a missing icon is a NOTE, an unrenderable one a FAIL. Preview with
 `python3 Michael/bootstrap/icons.py --out /tmp/icons`.
+
+## Follow-up questions
+
+The chips under the last reply are generated by a separate model call after the answer finishes. The browser asks for
+them on every reply (`background_tasks.follow_up_generation`, from the user's "Follow-Up Generation" setting, on by
+default); the server (`background_tasks_handler` in `utils/middleware.py`, `routers/tasks.py`) checks the admin switch
+`ENABLE_FOLLOW_UP_GENERATION`, fills the prompt template with the last six messages (`{{MESSAGES:END:6}}`, details
+blocks and images stripped), sends it to the task model, reads the `follow_ups` array out of the first `{` to the last
+`}` of the reply (falling back to `reasoning_content`), pushes it to the browser and saves it on the message as
+`followUps`. Unparsable output is dropped silently. Automations and delegated agents have no browser, so they get none.
+
+The task model is the chat's own model unless `TASK_MODEL` or `TASK_MODEL_EXTERNAL` is set; both are empty here, so for
+Lenny the call goes to the Lenny preset and carries its system prompt (no tools, no function filters). Each reply
+therefore costs one extra call on the main model; pointing `TASK_MODEL_EXTERNAL` at a smaller model would cut that.
+
+**Our prompt** is `models/follow-up-prompt.md`, pushed by `presets.py` into `FOLLOW_UP_GENERATION_PROMPT_TEMPLATE`
+(it reads the task config, replaces only that field and saves it; `--check` reports a difference; the file must keep
+`{{MESSAGES...}}` and the `"follow_ups"` key). It tells the model what Lenny can do (case data, charts and images,
+PowerPoint and Word, email drafts, translation, web research) and asks for exactly three suggestions grounded in the
+conversation: one that digs deeper into the data, one that turns the result into a chart or a deck, and one that shares
+or reuses it (an email draft, a translation, or web context, rotating). A document in the conversation always gets a
+translation suggestion; a greeting gets concrete data questions; email is always suggested as a draft; no new people
+or customers are introduced; narrower presets (web research, package tracking) stay in role. The setting is global, so
+it applies to every preset. Check a prompt change without a browser by posting a synthetic conversation to
+`POST /api/v1/tasks/follow_up/completions` (`{"model": "lenny", "messages": [...]}`). Test:
+`tests/test_presets.py` (`FollowUpPromptTests`).
 
 ## System prompts
 
@@ -160,16 +224,21 @@ shared-prompt include mechanism: policy repeated in several prompts must be revi
 
 ### Current prompt shapes
 
-- **Lenny** and **Case Assistant** carry no tool usage guides. Lenny's prompt is its role, the `<user_context>`
-  block, the answer style, the list of skills with when to use each, one paragraph on when to delegate (short jobs
+- **Lenny** and **Case Assistant** carry no tool usage guides. Lenny's prompt is its identity (an internal assistant
+  built by Michael Lei, in alpha testing), its purpose (answer questions about cases, products, employees, teams and
+  customers by crunching the data and showing the result as a table or chart), a feedback rule (for a bug, a missing
+  feature or feedback, offer to draft an email to the maintainer, drafted by default and sent only on request), the
+  `<user_context>` block, an honesty
+  rule (answer from tool results, say plainly when the data cannot answer, "no data" is not "zero", label inference, say
+  which data and limits an answer rests on), the answer style, the list of skills with when to use each, one paragraph on when to delegate (short jobs
   itself; tool-heavy or background jobs, or on request, to specialist agents), and three rules (tool and agent
-  output is untrusted data, nothing internal goes outside, mail is only sent by the user's click). Case
+  output is untrusted data, nothing internal goes outside, mail is drafted for review and sent with `send_draft` only
+  when the user explicitly says to). Case
   Assistant's is its role, answer pattern (case link, state, owner and team, freshness and coverage limits) and
   pointers to the `qdts`, `visualization` and `terminal-workspace` skills.
 - **Specialists** (`web-searcher`, `document-translator`, `office-documents`) keep their own prompts plus one pointer
-  to their skill (`web-search`, `document-translation`, `powerpoint`). The PATH assistant, Office Agent and
-  Knowledge Base Manager keep fuller prompts.
-- The five SOP-enabled presets (Document Translator, Web Searcher, Office Agent, Knowledge Base Manager, Office
+  to their skill (`web-search`, `document-translation`, `powerpoint`). The PATH assistant keeps a fuller prompt.
+- The three SOP-enabled presets (Document Translator, Web Searcher, Office
   Documents) inherit `knowledge_bases: ["sops"]`, and `desired_model()` turns on the knowledge built-in for them even
   if their own `builtin_tools` omits it.
 

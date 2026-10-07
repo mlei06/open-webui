@@ -5,7 +5,8 @@ Who can sign in, what every user can see, and how the stack checks it.
 ## Accounts
 
 Sign-up is closed (`ENABLE_SIGNUP=false`, also saved in Open WebUI by `bootstrap/accounts.py`, because saved settings
-override the environment) and the default role is `user`. Only an admin creates accounts: **Admin Panel > Users > Add
+override the environment) and the default role is `user`. The same script sets the two default user permissions we rely on
+(`workspace.knowledge`, `features.automations`) and leaves every other permission alone. Only an admin creates accounts: **Admin Panel > Users > Add
 User** (name, email, password, role `user`), or **CSV Import** on the same dialog with a file whose first row is a header
 and whose other rows are `Name,Email,Password,Role` (role `admin`, `user` or `pending`; the template is at
 `/static/user-import.csv`). There is no script in this repository for a users file: keep a private
@@ -24,11 +25,12 @@ Provisioning grants, and `bootstrap/access.py` audits (read-only, the last step 
 | Object | Grant |
 |---|---|
 | Model presets and the base model | Public read (they appear in everyone's selector; a preset is unusable if its base model has no registered row with a read grant) |
-| Workspace tools | Public read, **except** `visuals_toolkit_v4`, which is committed private (`access_grants: []`) and is reported as "not usable by all users" |
+| Workspace tools | Public read, including `visuals_toolkit_v4` (non-admin users could not use charts while it was private) |
 | Tool server connections | Public read in the connection config ([mcp.md](mcp.md)) |
 | The SOPs knowledge base | Public read **and write**, so users can add and edit files; nothing ever deletes a user's addition |
-| The review and send email action | Active, not global, attached to the models that list it (Lenny, Office Agent) |
+| The review and send email action | Active, not global, attached to the models that list it (Lenny) |
 | Skills | Public read ([skills.md](skills.md)) |
+| Scheduling automations | Granted: `accounts.py` sets the default user permission `features.automations` to true, so every user can schedule automations (Lenny's automation tools and the Automations page). An automation runs as its owner with the preset's tools, so it can use the same data and send mail as that user. `AUTOMATION_MAX_COUNT` and `AUTOMATION_MIN_INTERVAL` (admin settings, both unset today = unlimited) would cap how many and how often ([models.md](models.md#capabilities-and-defaults)) |
 | The user context filter | Global (runs for every user) |
 | The terminal connection | Public read once confined (`open_terminal.py --access all`, [terminal.md](terminal.md)) |
 

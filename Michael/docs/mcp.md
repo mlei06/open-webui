@@ -129,7 +129,7 @@ Not in v1 because Open WebUI has no field: per-server timeouts, OAuth auth, forw
 |---|---|---|---|---|---|
 | `doctranslator` | `translation_capabilities`, `get_translation_status`, `cancel_translation` | `TRANSLATOR_GATEWAY_URL` (required) | bearer `TRANSLATOR_API_KEY` | public | yes |
 | `employee_directory` | `search_employees`, `get_employee`, `get_direct_reports`, `get_management_chain` | `EMPLOYEE_DIRECTORY_MCP_URL` (`http://employee-directory:8000/mcp`) | bearer with `EMPLOYEE_MCP_API_KEY` only if set | public | yes |
-| `mail` | `create_draft`, `update_draft`, `get_draft`, `list_drafts`, `discard_draft` | `MAIL_MCP_URL` (`http://mail-service:8000/mcp`) | bearer `MAIL_MCP_API_KEY`; headers `X-User-Email`, `X-Chat-Id`, `X-Message-Id` | public | yes |
+| `mail` | `create_draft`, `update_draft`, `get_draft`, `list_drafts`, `discard_draft`, and `send_draft` when `MAIL_MCP_ALLOW_SEND` is on | `MAIL_MCP_URL` (`http://mail-service:8000/mcp`) | bearer `MAIL_MCP_API_KEY`; headers `X-User-Email`, `X-Chat-Id`, `X-Message-Id` | public | yes |
 | `qdts` | `lookup_entities`, `get_entity`, `search_cases`, `search_notes`, `search_tasks`, `aggregate_records`, `get_cases`, `get_records` | `QDTS_MCP_V2_URL` (`http://qdts-cases:8000/mcp/v2`) | shared bearer `QDTS_MCP_API_KEY`; no identity headers | public | yes |
 | `path` | `path_search_records`, `path_get_record_status`, `path_get_record_details`, `path_get_record_history`, `path_get_records`, `path_count_records`, `path_get_activity`, `path_get_filter_values`, `path_lookup_employees` | `PATH_MCP_URL` | bearer `PATH_MCP_API_KEY` only if set | public | yes |
 | `employee_directory_write` | `search_employees`, `get_employee`, `create_employee`, `update_employee`, `delete_employee` | `EMPLOYEE_WRITE_MCP_URL` | bearer `EMPLOYEE_WRITE_MCP_API_KEY` (required) | admin | **no** |
@@ -150,8 +150,8 @@ translator identity and job ids are not scoped per user.
 A service built from `EMPLOYEE_DIRECTORY_SRC` (compose service `employee-directory`, data in the volume
 `employee-directory-data`, healthcheck on `/healthz`). Its fuzzy `search_employees` returns candidates with a
 `resolution` (`exact`, `confident`, `ambiguous`, `none`); its tool descriptions tell the model to search first, pass
-the returned `id` on and ask the user when ambiguous. Our filter list keeps the model to the four read tools. Only the
-Office Agent preset uses it.
+the returned `id` on and ask the user when ambiguous. Our filter list keeps the model to the four read tools. No preset uses it
+since the Office Agent was retired.
 
 | `.env` variable | Meaning |
 |---|---|
@@ -181,15 +181,41 @@ exposed through MCP. Two instances share one SQLite file (the read instance migr
 
 ### Mail
 
-The `mail` connection is the draft-only MCP channel of the mail service: create, update, get, list and discard a
-draft, no send tool. It sends the bearer key `MAIL_MCP_API_KEY` and the identity headers `X-User-Email`, `X-Chat-Id`
+The `mail` connection is the model channel of the mail service: create, update, get, list and discard a draft, and
+**`send_draft` only when the service runs with `MAIL_MCP_ALLOW_SEND=true`** (below). By default it has no send tool.
+It sends the bearer key `MAIL_MCP_API_KEY` and the identity headers `X-User-Email`, `X-Chat-Id`
 and `X-Message-Id`, which Open WebUI fills per call. The service derives the From address from the user, never from
 the model: the user's own company address (`MAIL_ALLOWED_DOMAINS`, `lenovo.com`), otherwise `MAIL_SHARED_SENDER`
 (`lenny@lenovo.com`). There is no redirect switch (`MAIL_REDIRECT_ALL=off`).
 
-**Sending is the Review and send email action** (`functions/mail_review.py`, [functions.md](functions.md#review-and-send-email-action)):
-the envelope button under an assistant message opens the newest unsent draft in an editable form, and only the
-user's Send click sends. The mail service accepts only plain Open WebUI file ids in `suggested_attachment_ids` (at
+**Two ways to send.** (1) The **Review and send email action** below: the user's own click. (2) **`send_draft`**, an
+opt-in model tool for automations and for "send it" requests. `MAIL_MCP_ALLOW_SEND` is `false` by default in compose and
+`.env.example`; `true` adds a sixth tool that sends **the caller's own draft** (the owner is the `X-User-Email` of the
+call, so a draft is never sent for anyone else) to exactly its recorded recipients, through the same single-use,
+version-checked, policy-checked, rate-limited and audited path the review form uses (`MAIL_SENDS_PER_HOUR`, company
+addresses only, audit `via` `mcp:header`). `send_draft(draft_id, version?)` fails if the draft changed since the model
+read it, and refuses a draft that suggests attachments (only the review form can upload files, so model-sent mail
+carries none). `mcp.json` lists `send_draft` in the connection's `function_name_filter_list` but not in the tools that
+verification requires, so verification passes with sending off and the model gets the tool only when the service
+offers it. The rule for *when* a model may send is behavioural, not technical: the `mail-drafting` skill and the Lenny
+prompt say to send only when the user explicitly says to (or a scheduled automation's prompt does),
+and to report "sent" only from `send_draft` or `get_draft`. Anyone holding the shared `MAIL_MCP_API_KEY` can send as
+any user while this is on, so keep the key private and the service on the internal network. Turn it off by setting
+`MAIL_MCP_ALLOW_SEND=false` and recreating `mail-service`. Tests: `tests/test_mcp_send.py` in the mail-service repository
+(real MCP client over HTTP against the mock provider) and `tests/test_mcp_servers.py` here; the live stack uses the real
+relay, so send was verified only through those tests, not by sending real mail.
+
+**Automations.** Open WebUI automations run the full chat pipeline as the automation's owner with the preset's own tool
+list (`meta.toolIds`, so Lenny's scheduled run has the `mail` connection and `send_draft`), the owner's identity in the
+`{{USER_EMAIL}}` header, and no terminal unless the preset sets one (charts then use the render service,
+[tools.md](tools.md#visuals-toolkit)). A scheduled prompt has nobody to ask, so it must name the recipients, say what the
+mail contains and say to send it; the skill tells the model to send nothing when a recipient is missing or ambiguous.
+Recipients must be company addresses (`MAIL_ALLOWED_DOMAINS`), the owner must be eligible for a From address, and an
+owner without a company address sends as the shared sender.
+
+**Sending through the form is the Review and send email action** (`functions/mail_review.py`, [functions.md](functions.md#review-and-send-email-action)):
+the envelope button under an assistant message opens the newest unsent draft in an editable form, and its Send click
+sends. The mail service accepts only plain Open WebUI file ids in `suggested_attachment_ids` (at
 most 5; it rejects paths, names and `terminal:` references); `workspace_files.prepare_email_attachments` converts
 terminal paths into ids ([tools.md](tools.md#workspace-files)). The service enforces 5 files, 10 MB each, 20 MB
 total, no executables or macro documents.
@@ -227,7 +253,7 @@ silently select the wrong schema. The same service keeps 13 legacy tools at `/mc
 per-case authorization: everyone granted the connection can read every loaded case and **all private and system
 notes**; identity selects a query, never an access boundary. Customer names are plain (`QDTS_CUSTOMER_NAMES=plain`;
 alias mode is not implemented). Admins can read the stored connection key (valve encryption does not cover connection
-config). The internal provider and `nemotron-3-ultra` remain required: provisioning refuses an xAI key, outside
+config). The internal provider and `laguna-s-2.1` remain required: provisioning refuses an xAI key, outside
 saved connections, mismatched saved arrays or a different preset base, and prompts forbid sending case evidence to
 outside services. These are provisioning protections, not runtime DLP.
 
@@ -244,7 +270,9 @@ the provider. Semantics worth knowing as an operator:
 - **`product`, `customer` and `owning_team`** accept one field each for exact IDs and name keywords: a string (all
   words), a list (any entry) or `{any, all, exclude, descendants}`. A product name also matches the series above a
   product and its brand, so `"thinkpad"` selects every ThinkPad product. A name matching nothing returns zero with a
-  warning; an unknown numeric-looking ID is an error. They AND with the older `*_ids` fields and every other filter.
+  warning; an unknown numeric-looking ID is an error. A bare series ID (such as a `case_product_series` group id) selects only
+  the series entry, which holds no cases: the result warns, and the fix is `{"any": ["<id>"], "descendants": true}` or the
+  series name. They AND with the older `*_ids` fields and every other filter.
 - **Limits.** `limit` up to 100 and `top_n` up to 500; a larger value is reduced with a warning, never rejected.
   `lookup_entities` limit up to 100; `get_cases` and `get_records` take up to 50 ids; id lists up to 500. The response
   byte budget `QDTS_MAX_CHARS` (default 60,000 characters, about 100 compact rows) decides how many rows fit; the rest
@@ -307,7 +335,7 @@ declaration replaces the earlier hand-made connection and preset; no PATH backen
   does not secure a reachable keyless backend: the operator owns the network boundary and model-access policy.
   Never disable TLS verification for an HTTPS endpoint.
 - Presets: **PATH assistant** (`path`) has only `server:mcp:path`, time and user input, and the user context filter;
-  **Office Agent** and **Lenny** also have `path`. The filter derives the company itcode from the email local part,
+  **Lenny** also has `path`. The filter derives the company itcode from the email local part,
   the assistant validates it with PATH and passes `recipient_network_ids`, never "me"; the name route is the
   explicitly labelled fuzzy `recipient_name`. This is an identity filter, not authorization. PATH records stay on the
   approved internal model.

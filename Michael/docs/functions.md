@@ -103,7 +103,7 @@ email: jdoe@example.com
 
 ```json
 {"default": ["name", "id", "email"],
- "models": {"nemotron-3-ultra": ["name", "id", "email"], "bge-reranker-v2-m3": []}}
+ "models": {"laguna-s-2.1": ["name", "id", "email"], "bge-reranker-v2-m3": []}}
 ```
 
 A model uses its own entry, else its base model's entry (so a preset can be set separately or inherits), else
@@ -134,13 +134,15 @@ merge, a forged block, a name-only model, and embedding calls without a system m
 ## Review and send email action
 
 `functions/mail_review.py` is the **Action** that sends mail. It is declared under `actions` in `models/presets.json`,
-installed and activated by `presets.py` (active, not global), and attached to Lenny and the Office Agent only. The
-mail tools can only draft ([mcp.md](mcp.md#mail)); sending is the envelope button under an assistant message: it opens
+installed and activated by `presets.py` (active, not global), and attached to Lenny only. By
+default the mail tools can only draft ([mcp.md](mcp.md#mail)); with `MAIL_MCP_ALLOW_SEND=true` a model can also send
+its own drafts with `send_draft` (for automations, or when the user says "send it"). The form is the human route: the
+envelope button under an assistant message: it opens
 the chat's newest unsent draft in an editable form (From read-only, To, Cc, Subject, Message, and a tick list of the
 chat files the model suggested through `suggested_attachment_ids`). Pressing Send makes the action upload the ticked
 files from Open WebUI's file store to the mail service and send, using the clicking user's own session token, which
 the model never sees. Attachment bytes never pass through the model; the mail service enforces its limits. Report
-"sent" only from `get_draft`. Tests: `tests/test_mail_review.py` (needs `httpx` and `pydantic`). The click-through in a
+"sent" only from `send_draft` or `get_draft`. Tests: `tests/test_mail_review.py` (needs `httpx` and `pydantic`). The click-through in a
 browser has not been tested.
 
 ## Event functions
@@ -289,8 +291,6 @@ append-only storage if that matters), events lost while the server is down or st
 never recorded, one file per day shared by all workers (single-line appends do not interleave). Review the valves
 (`include_email`, `retention_days`) before applying it to the live instance.
 
-## Interface functions
-
 ## Token usage display
 
 `functions/token_usage_display.py` (id `token_usage_display`, a **global, active filter**; "Token Usage & Cost Display"
@@ -315,6 +315,8 @@ admin's settings in Admin > Functions survive).
 - **Editor saves reformat tools.** Saving a function or tool in Open WebUI's code editor re-formats the Python (black
   style), which shows up as cosmetic drift in `extensions.py --check`; provisioning restores the repository text.
   Valves changes in the admin UI are not affected.
+
+## Interface functions
 
 `functions/interface_toggles.py` and `functions/collapsed_sidebar_pinned_models.py` (both @G30 version 1.0.0, event
 functions managed by `extensions.json`, active and not global) contribute to `/static/loader.js` through the shared

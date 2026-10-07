@@ -52,6 +52,8 @@ class ExtensionsTests(unittest.TestCase):
 
     def test_manifest_sources_compile_and_retired_do_not_overlap(self):
         doc = extensions.load_manifest()
+        self.assertEqual([x for x in doc['managed'] if x['id'] == 'visuals_toolkit_v4'][0]['access_grants'],
+                         [{'principal_type': 'user', 'principal_id': '*', 'permission': 'read'}])
         self.assertEqual({x['id'] for x in doc['managed']}, {'visuals_toolkit_v4', 'delegate_agents', 'workspace_files', 'interface_toggles', 'collapsed_sidebar_pinned_models', 'token_usage_display'})
 
     def test_the_token_usage_filter_is_a_global_active_filter_and_is_the_reviewed_source(self):

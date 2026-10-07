@@ -127,10 +127,16 @@ class ConnectionTests(unittest.TestCase):
         c = want('mail', {'MAIL_MCP_API_KEY': 'k-mail'})
         self.assertEqual((c['url'], c['auth_type'], c['key']), ('http://mail-service:8000/mcp', 'bearer', 'k-mail'))
         self.assertEqual(c['headers'], {'X-User-Email': '{{USER_EMAIL}}', 'X-Chat-Id': '{{CHAT_ID}}', 'X-Message-Id': '{{MESSAGE_ID}}'})
-        self.assertEqual(c['config']['function_name_filter_list'], 'create_draft,update_draft,get_draft,list_drafts,discard_draft')
+        self.assertEqual(c['config']['function_name_filter_list'], 'create_draft,update_draft,get_draft,list_drafts,discard_draft,send_draft')
         self.assertNotIn('send', ','.join(BY_ID['mail']['tools']))
         with self.assertRaisesRegex(m.ConfigError, 'MAIL_MCP_API_KEY'):
             want('mail', {})
+
+    def test_the_model_may_be_offered_send_draft_but_the_service_must_not_be_required_to_list_it(self):
+        mail = BY_ID['mail']
+        self.assertIn('send_draft', mail['function_name_filter_list'])  # allowed through when the service has it on
+        self.assertNotIn('send_draft', mail['tools'])                  # verification still passes with sending off
+        self.assertEqual(set(mail['tools']) | {'send_draft'}, set(mail['function_name_filter_list']))
 
     def test_servers_without_headers_send_none(self):
         self.assertIsNone(want('doctranslator')['headers'])

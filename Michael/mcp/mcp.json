@@ -89,7 +89,7 @@
     {
       "id": "mail",
       "name": "Mail drafts",
-      "description": "Draft email for the signed-in user. Cannot send: the user reviews the draft and presses Send in the Review and send email action.",
+      "description": "Draft email for the signed-in user. By default it cannot send: the user reviews the draft and presses Send in the Review and send email action. When the mail service has MAIL_MCP_ALLOW_SEND on, send_draft also lets the model send the user's own draft when the user (or a scheduled task) explicitly says to.",
       "type": "mcp",
       "transport": "streamable-http",
       "url": "${MAIL_MCP_URL}",
@@ -133,7 +133,8 @@
         "update_draft",
         "get_draft",
         "list_drafts",
-        "discard_draft"
+        "discard_draft",
+        "send_draft"
       ]
     },
     {

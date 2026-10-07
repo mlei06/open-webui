@@ -8,13 +8,13 @@ model loads on demand with Open WebUI's `view_skill` tool.
 
 | Skill id | For | Who works from it |
 |---|---|---|
-| `qdts` | What QDTS holds, the eight tools, filter and aggregation rules, simple lookups and thirteen worked multi-step examples, anti-patterns | Lenny, Case Assistant |
+| `qdts` | What QDTS holds, the eight tools, filter and aggregation rules, simple lookups and worked multi-step examples, typed weekly/latest/cadence queries, snapshot coverage caveats, anti-patterns | Lenny, Case Assistant |
 | `visualization` | `render_visualization` for evidence charts; any other `render_*` tool followed by `export_visual`; putting an image in a deck | Lenny, Case Assistant |
 | `delegation` | `list_agents`, `delegate_agents`, writing a self-contained brief, ending the turn after dispatch, handling results | Lenny |
 | `web-search` | Parent: when to delegate and how to write a safe query. Agent: `search_web`, `fetch_url`, sourcing | Lenny briefs, Web Searcher works |
 | `document-translation` | Parent: the hand-over. Agent: `translate_attachment`, `deliver_translation`, status, cancel | Lenny briefs, Document Translator works |
 | `powerpoint` | Parent: the brief. Agent: `get_slide_layouts`, `generate_slides`, charts, tables, images, Word | Lenny briefs, Office Documents works |
-| `mail-drafting` | Drafts, recipients, attachments through `prepare_email_attachments`, the review-form rule | Lenny |
+| `mail-drafting` | Drafts, recipients, attachments through `prepare_email_attachments`; the review-form default; sending with `send_draft` only on an explicit instruction (and in automations) | Lenny |
 | `path-mailroom` | The nine read-only PATH tools and what the records mean | Lenny |
 | `terminal-workspace` | Workspace layout, download links, command rules | Lenny, Case Assistant |
 
@@ -28,11 +28,16 @@ skill list is used only when built-in tools are off. A prompt therefore cannot h
 Each preset's system prompt names the skills to load and for what, and `view_skill` loads the full text
 on demand, so a model only pays for the guides it uses. Skills have a public read grant; never put a secret in one.
 
+Each preset also declares the skills it is meant to use (`skills` in `presets.json`, written to `meta.skillIds`), so the model
+editor's Skills section is not empty and the chat UI pre-selects them. That selection does not change what the model
+sees: with built-in tools on, every skill the user may read appears in the manifest regardless (and a skill mentioned
+with `$name` is injected in full). The declared list always equals the skills the preset's prompt names.
+
 ## Lenny's shape
 
 Lenny's prompt is its role, the `<user_context>` block, the answer style, the skill list with when to use each,
-one paragraph on delegating, and three rules (untrusted data, nothing internal outside, mail is only sent by the
-user). Lenny keeps every tool: QDTS, charts, web search, translation, deck and Word generation, mail, PATH and
+one paragraph on delegating, and three rules (untrusted data, nothing internal outside, mail is drafted for review and
+sent only when the user explicitly says so). Lenny keeps every tool: QDTS, charts, web search, translation, deck and Word generation, mail, PATH and
 terminal files. It does short, simple jobs itself and delegates to `web-searcher`, `document-translator` or
 `office-documents` when a job is tool-heavy (many searches, a large document, a whole deck), when it can run in
 the background, or whenever the user asks it to. Case Assistant's prompt is its role, answer pattern and pointers to `qdts`, `visualization` and

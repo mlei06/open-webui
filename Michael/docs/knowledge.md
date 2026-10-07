@@ -15,7 +15,7 @@ slide's text, tables and speaker notes with link targets; images and videos are 
 are not committed. Each file starts with an overview naming the owner and who to ask. **Knowledge base text is public
 in this repository**, so review a deck before converting it (the PATH deck contained internal network addresses).
 
-Presets that receive it: Document Translator, Web Searcher, Office Agent, Knowledge Base Manager and Office Documents
+Presets that receive it: Document Translator, Web Searcher and Office Documents
 (from the top-level `knowledge_bases` in `models/presets.json`). With a base attached, `desired_model()` also turns on
 the built-in knowledge tool, which is how a native-calling model searches it. A knowledge base a user attached to a
 preset in the app is kept; one this repository provisions and a preset no longer declares is detached
@@ -38,7 +38,7 @@ python3 Michael/bootstrap/presets.py                    # attach the base to the
 ```
 
 To add a seed document: put the Markdown under `knowledge/`, list it in `manifest.json`, run the script. Users can also
-drop a file into a chat with the **Knowledge Base Manager** preset and ask it to create an entry; those entries live in
+add files to the SOPs base in the app (every user can write to it); those entries live in
 the app's volume and are not committed.
 
 ## Knowledge Base Manager tool
@@ -46,7 +46,7 @@ the app's volume and are not committed.
 `tools/knowledge_base_manager.json` is an Open WebUI tool export, imported by `bootstrap/kb_manager_tool.py` (compared
 by source, so re-runs change nothing) and readable by every user. It calls Open WebUI's own API at
 `http://127.0.0.1:8080` (inside the container) with the signed-in user's own token, so it can do only what that user may
-do; it has no valves, stores no secrets and logs nothing. It is attached to the **Knowledge Base Manager** preset only.
+do; it has no valves, stores no secrets and logs nothing. The **Knowledge Base Manager** preset that used it was retired, so it is installed but attached to no preset; list it under a preset's `tools` in `presets.json` to use it again.
 
 **Deletions are confirmed by the user, not the model.** Every delete (a file by id or path, a folder, a knowledge base)
 needs the model's `confirm=true` (and `allow_nonempty=true` for a non-empty base) and then the tool asks the signed-in

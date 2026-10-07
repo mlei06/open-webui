@@ -719,6 +719,36 @@ pre.vis{{
 }})();
 </script>"""
 
+    def _evidence_body(self, chart_id, figure, result):
+        url = result.get('download_url') or result.get('terminal_download_url')
+        fallback = ('<img src="' + html.escape(url, quote=True) + '" alt="Chart export" style="width:100%;height:auto">') if url else '<p>Interactive renderer unavailable; export download could not be registered.</p>'
+        link = ('<a download href="' + html.escape(url, quote=True) + '">Download chart</a>') if url else '<p>Download unavailable; see warnings.</p>'
+        metadata = result['source_metadata']
+        details = ''.join('<dt>' + html.escape(str(k).replace('_', ' ')) + '</dt><dd>' + html.escape('; '.join(str(x) for x in v) if isinstance(v, list) else str(v)) + '</dd>' for k, v in metadata.items())
+        return f"""<div class="card"><div id="{chart_id}-fallback">{fallback}</div>
+<div id="{chart_id}" hidden></div>{link}
+<details><summary>Source, scope and warnings</summary><dl>{details}</dl></details></div>
+<script src="{self._PLOTLY_JS}"></script><script>
+(function(){{
+ const target=document.getElementById('{chart_id}'), fallback=document.getElementById('{chart_id}-fallback');
+ const figure={_script_json(figure)};
+ function render(){{
+  const w=Math.max(600,target.parentElement.clientWidth);
+  const layout=JSON.parse(JSON.stringify(figure.layout));
+  const ratio=w/layout.width;
+  layout.width=w;layout.height=Math.max(500,Math.round(layout.height*Math.max(0.85,ratio)));
+  // Keep readable font sizes; labels/legend retain their measured export margins.
+  ['l','r'].forEach(k=>layout.margin[k]=Math.round(layout.margin[k]*Math.min(1,ratio)));
+  const annotation=layout.annotations[0];
+  if(annotation){{annotation.x=(24-layout.margin.l)/(w-layout.margin.l-layout.margin.r);}}
+  return Plotly.react(target,figure.data,layout,{{displayModeBar:false,responsive:false}});
+ }}
+ if(typeof Plotly==='undefined')return;
+ target.hidden=false;fallback.hidden=true;
+ Promise.all([document.fonts.load('24px "Liberation Sans"'),document.fonts.ready]).then(render).catch(function(){{target.hidden=true;fallback.hidden=false;}});
+ window.addEventListener('resize',function(){{render().catch(function(){{target.hidden=true;fallback.hidden=false;}});}});
+}})();</script>"""
+
     # ================================================================
     # PUBLIC: render_table
     # ================================================================
@@ -2301,7 +2331,8 @@ pre.vis{{
         Only trusted chart fields are accepted; no JS, Python, URLs or host paths.
         One normalized Plotly figure supplies browser and PNG; fonts/themes derive
         from the current PowerPoint starter. Default PNG; format jpeg is optional.
-        Return one download URL per artifact, preferring download_url and using
+        The inline chart is the primary preview. Never repeat it as a Markdown image.
+        Return a plain download link per artifact, preferring download_url and using
         terminal_download_url only as a fallback for a verified Terminal copy.
         Never show both URLs. Keep workspace_path internally; show it only for an
         explicit Terminal save/open/edit/reuse request. To put the image in a deck,
@@ -2374,13 +2405,15 @@ pre.vis{{
                 await _terminal_discard(context, workspace_path)
                 workspace_path = None
             result.update(file_name=name, size=saved['size'], sha256=saved['sha256'], width=info['width'], height=info['height'])
-            await self._register_image(raw, name, image_format, result, __request__, __user__, __event_emitter__)
+            await self._register_image(raw, name, image_format, result, __request__, __user__, None)
+            result['primary_preview'] = 'interactive'
+            result['artifact_reference'] = {'file_id': result['file_id'], 'sha256': result['sha256'], 'workspace_path': result['workspace_path']}
             figure = saved['figure']
             cid = 'visual-' + uuid.uuid4().hex
-            body = self._plotly_body(cid, figure['data'], figure['layout'])
+            body = self._evidence_body(cid, figure, result)
             fonts = '''<style>@font-face{font-family:"Liberation Sans";src:url("/static/plotly/LiberationSans-Regular.ttf")}@font-face{font-family:"Liberation Sans";font-weight:700;src:url("/static/plotly/LiberationSans-Bold.ttf")}</style>'''
-            # Deterministic native image remains visible when scripts/local JS are unavailable.
-            result['instructions'] = ('Interactive HTML is returned. An image preview is requested only when download_url exists; check warnings. '
+            # Export registration deliberately emits no second image attachment.
+            result['instructions'] = ('One primary interactive preview is returned; its image fallback replaces it only if scripts fail. Do not repeat this chart as a Markdown image or request another preview. Use a plain Markdown download link. '
                                       + ('Use workspace_path for terminal_image_path when terminal_saved is true. ' if own else
                                          'No terminal was selected, so the image exists only as the download: to put it on a slide pass file_id as image_file_id. ')
                                       + 'Disclose font fallback and coverage warnings. ' + _DELIVERY_INSTRUCTIONS)
@@ -2446,7 +2479,8 @@ pre.vis{{
         theme "light" for a white background when the image goes onto a slide or a document. To put the
         image in a deck, pass the returned workspace_path as terminal_image_path on a generate_slides
         slide that uses template_layout "Chart Slide" with image_fit "contain".
-        Return one download URL per artifact, preferring download_url and using terminal_download_url only
+        The inline chart is the primary preview. Never repeat it as a Markdown image.
+        Return a plain download link per artifact, preferring download_url and using terminal_download_url only
         as a fallback for a verified Terminal copy. Keep workspace_path internally; show it only for an
         explicit Terminal save/open/edit/reuse request. An Open Terminal is optional: without one the image is delivered as a download only (the result's file_id works as image_file_id on a slide).
 

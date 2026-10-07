@@ -79,8 +79,9 @@ def _visual_figure(spec, theme):
     if len(' '.join(caption_parts)) > 1100:
         raise ValueError('Coverage caption is too long; keep full source metadata separately')
     caption = '<br>'.join(caption_parts)
-    width = spec.get('width', min(1600, round(1600 * theme['picture_ratio'])))
-    height = spec.get('height', round(width / theme['picture_ratio']))
+    slide = 'picture_layout' in spec or 'width' in spec or 'height' in spec or spec.get('show_title') is False
+    width = spec.get('width', min(1600, round(1600 * theme['picture_ratio'])) if slide else 960)
+    height = spec.get('height', round(width / theme['picture_ratio']) if slide else 640)
     if type(width) is not int or type(height) is not int or not 600 <= width <= 2400 or not 400 <= height <= 2400 or width * height > 4_000_000:
         raise ValueError('Use bounded slide-ready dimensions, 600–2400 by 400–2400 pixels, at most 4 MP')
     # Raster resolution must not make slide text smaller: size in physical points.
@@ -88,9 +89,14 @@ def _visual_figure(spec, theme):
     axis_font = max(24, round(14 * pixels_per_point))
     heading_font = max(32, round(18 * pixels_per_point))
     caption_font = max(16, round(9 * pixels_per_point))
-    line_width = max(24, int((width - 180) / (caption_font * 0.6)))
-    # One compact paragraph, not a line per field: the chart needs the height more than the caption does.
-    caption_lines = textwrap.wrap('  \u2022  '.join(caption_parts), line_width)
+    # Full provenance travels in adjacent details and image metadata. The footer keeps
+    # a source/period reference and makes the accompanying disclosures explicit.
+    compact = [part for part in caption_parts if part.startswith(('source:', 'period:'))]
+    if caption_parts:
+        compact.append('Scope, coverage and date basis in details' +
+                       ('; %d warning(s) in details' % len(warnings) if warnings else ''))
+    line_width = max(24, int((width - 96) / (caption_font * 0.62)))
+    caption_lines = textwrap.wrap('  •  '.join(compact), line_width)
     caption = '<br>'.join(caption_lines)
     title_width = max(24, int((width - 120) / (heading_font * 0.6)))
     show_title = spec.get('show_title', True)
@@ -101,7 +107,7 @@ def _visual_figure(spec, theme):
         raise ValueError('Use a shorter title for the selected chart width')
     title = '<br>'.join(title_lines)
     traces = []
-    below_axis = round(axis_font * 2.8)  # room for the category labels under the plot
+    below_axis = round(axis_font * 3.6)  # tick labels and axis title have their own band
     layout = {'width': width, 'height': height, 'paper_bgcolor': theme['background'],
               'plot_bgcolor': theme['background'],
               'font': {'family': theme['font'], 'size': axis_font, 'color': theme['foreground']},
@@ -109,8 +115,8 @@ def _visual_figure(spec, theme):
                         'font': {'size': heading_font, 'family': theme['font']}},
               'margin': {'l': 120, 'r': 90, 't': max(95, heading_font * (len(title_lines) + 1)) if show_title else 40, 'b': below_axis + round(caption_font * 1.4) * len(caption_lines) + 24},
               'colorway': _colorway(theme, 1), 'showlegend': False,
-              'xaxis': {'automargin': True, 'zeroline': False},
-              'yaxis': {'automargin': True, 'zeroline': False},
+              'xaxis': {'automargin': False, 'zeroline': False},
+              'yaxis': {'automargin': False, 'zeroline': False},
               'annotations': [{'text': caption, 'xref': 'paper', 'yref': 'paper', 'x': 0, 'y': 0, 'yshift': -below_axis,
                                'xanchor': 'left', 'yanchor': 'top', 'showarrow': False,
                                'align': 'left', 'font': {'size': caption_font}}] if caption else []}
@@ -261,5 +267,31 @@ def _visual_figure(spec, theme):
         layout['xaxis']['type'] = 'date'; layout['yaxis']['autorange'] = 'reversed'
     else:
         raise ValueError('kind must be bar, line, heatmap, timeline, sequence or gantt. For a pie, donut, gauge, table, funnel, radar, sankey, waterfall, flowchart, tree or dashboard call the matching render_* tool and then export_visual with its visual_id')
+    # Explicit label space prevents Plotly's automatic margins from stealing footer
+    # space or invalidating its wrapping width. Preserve raw category values/order.
+    labels = layout['yaxis'].get('categoryarray') or layout['yaxis'].get('ticktext')
+    if labels:
+        label_width = min(round(width * 0.34), max(120, round(max(len(html.unescape(x)) for x in labels) * axis_font * 0.58)))
+        chars = max(8, int(label_width / (axis_font * 0.62)))
+        wrapped = ['<br>'.join(textwrap.wrap(x, chars)) for x in labels]
+        layout['margin']['l'] = label_width + 28
+        layout['yaxis'].update(tickmode='array', tickvals=labels if 'categoryarray' in layout['yaxis'] else layout['yaxis']['tickvals'], ticktext=wrapped)
+        rows = sum(max(1, x.count('<br>') + 1) for x in wrapped)
+        if rows * axis_font * 1.25 > height - layout['margin']['t'] - layout['margin']['b']:
+            raise ValueError('Category labels need a taller chart or fewer supplied categories')
+    if layout['xaxis'].get('type') == 'category':
+        labels = layout['xaxis']['categoryarray']
+        chars = max(6, int((width - layout['margin']['l'] - layout['margin']['r']) / len(labels) / (axis_font * 0.62)))
+        wrapped = ['<br>'.join(textwrap.wrap(x, chars)) for x in labels]
+        layout['xaxis'].update(tickmode='array', tickvals=labels, ticktext=wrapped)
+        extra = max(x.count('<br>') for x in wrapped) * round(axis_font * 1.3)
+        below_axis += extra
+        layout['margin']['b'] += extra
+    if caption:
+        plot_width = width - layout['margin']['l'] - layout['margin']['r']
+        if plot_width < 120:
+            raise ValueError('Labels and legend need a wider chart')
+        layout['annotations'][0].update(x=(48 - layout['margin']['l']) / plot_width, yshift=-below_axis)
+    layout['meta'] = {'source_metadata': metadata}
     return {'data': traces, 'layout': layout}, {'width': width, 'height': height, 'metadata': metadata,
                                               'caption': caption, 'warnings': warnings}

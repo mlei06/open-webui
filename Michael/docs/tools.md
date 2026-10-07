@@ -98,9 +98,9 @@ Deletion does not erase historical chat output, and old chats can still mention 
 
 | Id | Type | Source | Access |
 |---|---|---|---|
-| `visuals_toolkit_v4` | Workspace tool | `tools/visuals_toolkit_v4.py` | Private: `access_grants: []`, no public read, attached to Lenny and Case Assistant by `presets.json` |
+| `visuals_toolkit_v4` | Workspace tool | `tools/visuals_toolkit_v4.py` | Public read (all users; without it a non-admin user's Lenny cannot call any `render_*` tool), attached to Lenny and Case Assistant by `presets.json` |
 | `delegate_agents` | Workspace tool | `tools/delegate_subtask.py` | Public read; attached to Lenny only |
-| `workspace_files` | Workspace tool | `tools/workspace_files.py` | Public read; attached to every terminal preset and Office Agent |
+| `workspace_files` | Workspace tool | `tools/workspace_files.py` | Public read; attached to every terminal preset |
 | `interface_toggles` | Event function | `functions/interface_toggles.py` | Active, not global ([functions.md](functions.md#interface-functions)) |
 | `collapsed_sidebar_pinned_models` | Event function | `functions/collapsed_sidebar_pinned_models.py` | Active, not global |
 | `token_usage_display` | Filter function | `functions/token_usage_display.py` | Active and **global** ([functions.md](functions.md#token-usage-display)) |
@@ -110,8 +110,7 @@ Retired when present: tools `openui`, `delegated_agent_runner`, `file_sending_to
 `readable_generation_info` stays installed but unmanaged. Theme Designer Pro is a separately supplied private plugin
 handled by `branding.py` ([branding.md](branding.md)). The managed sources are reviewed exports; MIT licence
 metadata and upstream attribution stay in their headers. No valves, user exports, credentials or private endpoints
-are committed. `access.py` reports `visuals_toolkit_v4` as "not usable by all users" because it has no grant; that is
-the committed policy, and a public read grant is a separate decision.
+are committed. `visuals_toolkit_v4` has a public read grant (it was private at first, which hid every chart tool from non-admin users).
 
 Tools that need shared code do not import it at runtime: `bootstrap/office_tools.bundle_delivery_source` replaces
 each tool's `from workspace_delivery import ...` (and `from visual_figure import ...`) line with the module's source
@@ -259,9 +258,15 @@ example is `tests/fixtures/slide-template-example.json`.
   whole image. On a `Chart Slide`, an image replaces the empty chart placeholder and is shown whole inside the chart
   area (aspect kept, nothing cropped). Remote images keep the public-address-only network guard. A failed image or a
   layout with no picture or chart placeholder is an error.
+- **Starter-template text.** `body` and `bullets[]` go into the layout's own bullet placeholder, so a typed leading `•`, `-`,
+  `*` or `–` is stripped (it would show twice) and blank lines are dropped (they would be empty bullets). Fields only the
+  legacy house style draws (`layout` aliases, `theme`, `eyebrow`, `chips`, `number`, icons, `stats`, `steps`) are ignored
+  and listed in `layout_adjustments`. The docstring tells the model to use `template_layout` and exact layout names.
+  A chapter divider is `Section Header_White` with `title` and `subtitle`; a content layout would bullet its text.
 - **`terminal_image_path`** reads a raster image from the user's `~/workspace` (relative path, or an explicit
   `~/workspace/` prefix): browse with the terminal's file tools first, never guess. It does not interpret images or
-  embed PDF or Office files. Do not combine it with another image source.
+  embed PDF or Office files. Do not combine it with another image source. A path that is not found fails with a message
+  naming the path and saying to use the `workspace_path` an earlier tool returned (not a bare name or `/tmp`).
 - **`placeholders`** maps discovered text indices to strings or `{text, level}` bullets (levels 0 to 4); do not guess
   indices. Speaker `notes` are new content; the starter's notes, instruction slides and stale thumbnail are dropped.
   `closing` uses fixed artwork with no text slot (takeaways go on a preceding content slide), and blank layouts have
@@ -457,3 +462,5 @@ after changing the pinned Open WebUI version. Background jobs live in the server
 jobs. Live checks covered a parallel and a sequential job, a Word document delegated to Office Documents with the
 terminal selected, and web search and deck delegations from Lenny; not covered: a failing sequential step, timeouts,
 cancellation, the allowlist valve.
+
+Evidence charts use one primary interactive preview and a plain export download link, without a duplicate native attachment or Markdown image. A script failure replaces the interactive region with its authenticated image fallback. Chat defaults to 960 × 640; explicit slide dimensions and picture layouts remain supported. The source footer has a separate region from axis labels/title; complete source metadata and warnings are in adjacent details and embedded PNG/JPEG provenance.
