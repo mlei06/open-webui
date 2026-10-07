@@ -32,10 +32,39 @@ services:
     volumes:
       - open-webui:/app/backend/data
       - ./runtime/certs:/certs:ro
+      # Keep the narrow chat-file compatibility route active on recreation of this image.
+      - ../backend/open_webui/main.py:/app/backend/open_webui/main.py:ro
+      - ./runtime/plotly:/app/backend/open_webui/static/plotly:ro
     ports:
       - ${OPEN_WEBUI_PORT:-3000}:8080
     extra_hosts:
       - host.docker.internal:host-gateway
+    networks: [default, terminal]
+    restart: unless-stopped
+
+  # Native terminal integration; see docs/OPEN_TERMINAL.md. No host ports or mounts.
+  open-terminal:
+    build:
+      context: ..
+      dockerfile: Michael/terminal/Dockerfile
+      args:
+        TERMINAL_BASE_IMAGE: ${OPEN_TERMINAL_IMAGE:-ghcr.io/open-webui/open-terminal:0.14.0@sha256:81a5394b3cd4ae32adb600f2135f09ee124de37f26b0a780e2f5692472c0fc5c}
+    image: ${OPEN_TERMINAL_RENDER_IMAGE:-michael-open-terminal:plotly-7.0.0-kaleido-1.2.0}
+    environment:
+      OPEN_TERMINAL_API_KEY: ${OPEN_TERMINAL_API_KEY:?Initialize the private terminal key with bootstrap/init_env.py}
+      OPEN_TERMINAL_MULTI_USER: "true"
+    volumes:
+      - terminal-data:/home
+    networks: [terminal]
+    mem_limit: 2g
+    cpus: 2
+    pids_limit: 512
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
     restart: unless-stopped
 
   # Employee directory (REST API, UI and MCP server), built from its own source tree.
@@ -170,7 +199,11 @@ services:
     restart: "no"
 
 # Reuse the data volume of the original stack so existing chats carry over.
+networks:
+  terminal:
+
 volumes:
+  terminal-data:
   qdts-cases-data:
   employee-directory-data:
   mail-service-data:

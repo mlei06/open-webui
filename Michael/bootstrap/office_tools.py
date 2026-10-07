@@ -19,23 +19,30 @@ Through the authenticated admin API this script:
   3. closes the one tool setting that reads other users' files: the Word tool's letterhead
      lookup scans the server upload folders by file name, so letterhead_dirs is pointed at a
      folder that does not exist. A letterhead attached to the chat still works;
-  4. verifies the stored tools expose their function.
+  4. loads runtime/brand/lenovo-starter.pptx into the slides template valve when present;
+  5. verifies the stored tools expose their functions, including layout discovery.
 
 The "Office Documents" preset that attaches both tools is created by presets.py.
 
-Options: --check changes nothing and exits 1 when something differs. Reuses the helpers of
+Options: --check changes nothing and exits 1 when something differs; --slides-only limits updates to PowerPoint. Reuses the helpers of
 davy_connection.py. Standard library only. Secrets are never printed (there are none here:
 the logo is brand artwork); only ids and fixed status text are written.
 """
 
 import argparse
 import base64
+import hashlib
+import json
+import os
+from pathlib import Path
+from io import BytesIO
 import math
 import re
 import struct
 import sys
 import xml.etree.ElementTree as ET
 import zlib
+import zipfile
 
 from davy_connection import MICHAEL_DIR, ApiError, call, get_token, load_env
 
@@ -44,6 +51,9 @@ BRAND_DIR = MICHAEL_DIR / 'runtime' / 'brand'
 LOGO_FILES = ('lenovo-logo.svg', 'lenovo-logo.png')  # same order as branding.py
 LOGO_VALVE = 'brand_logo_png_b64'
 LOGO_HEIGHT_PX = 240
+STARTER_FILE = BRAND_DIR / 'lenovo-starter.pptx'
+STARTER_VALVE = 'starter_template_b64'
+STARTER_CONFIG = MICHAEL_DIR / 'branding' / 'powerpoint.json'
 # Not a real path: the Word tool lists letterhead_dirs and skips what it cannot open.
 NO_LETTERHEAD_DIRS = '/nonexistent/letterhead-lookup-disabled'
 
@@ -53,7 +63,8 @@ TOOLS = [
         'name': 'Generate Slide PPTX',
         'file': MICHAEL_DIR / 'tools' / 'generate_slides.py',
         'function': 'generate_slides',
-        'description': 'Generate a native PowerPoint (.pptx) deck from a JSON spec in the Lenovo house style and return a download link.',
+        'extra_functions': ['get_slide_layouts'],
+        'description': 'Discover installed starter layouts and generate an editable PowerPoint (.pptx) from a JSON spec, preserving the native Lenovo template when installed.',
         'valves': {},
     },
     {
@@ -389,6 +400,70 @@ def load_logo_png():
     return None, 'no logo in runtime/brand/'
 
 
+def load_starter_template(path=None):
+    """Load the private, administrator-selected PPTX; never store it in source."""
+    path = path or STARTER_FILE
+    if not path.is_file():
+        return None
+    if path.stat().st_size > 16 * 1024 * 1024:
+        raise ValueError('Starter PPTX exceeds 16 MiB')
+    raw = path.read_bytes()
+    try:
+        with zipfile.ZipFile(BytesIO(raw)) as archive:
+            infos = archive.infolist()
+            if len(infos) > 2000 or sum(i.file_size for i in infos) > 64 * 1024 * 1024:
+                raise ValueError('Starter PPTX package is too large')
+            names = archive.namelist()
+            if 'ppt/presentation.xml' not in names or not any(n.startswith('ppt/slideLayouts/slideLayout') for n in names):
+                raise ValueError('Starter PPTX must contain a presentation and slide layouts')
+            if any('vbaproject' in n.lower() or n.startswith(('ppt/embeddings/', 'ppt/activeX/')) for n in names):
+                raise ValueError('Starter PPTX must not contain macros or embedded objects')
+            for name in names:
+                if name.endswith('.rels'):
+                    for rel in ET.fromstring(archive.read(name)):
+                        if rel.get('TargetMode') == 'External' and not rel.get('Type', '').endswith('/hyperlink'):
+                            raise ValueError('Starter PPTX contains externally linked content')
+            ET.fromstring(archive.read('ppt/presentation.xml'))
+    except (zipfile.BadZipFile, ET.ParseError):
+        raise ValueError('Starter PPTX is not a valid presentation package') from None
+    return raw
+
+
+def configured_starter(source=None, check=False):
+    """Reconcile the declared private asset; missing artwork must not select legacy implicitly."""
+    config = json.loads(STARTER_CONFIG.read_text())
+    if config.get('schemaVersion') != 1 or config.get('mode') not in ('starter', 'legacy'):
+        raise ValueError('Invalid branding/powerpoint.json schemaVersion or mode')
+    if config['mode'] == 'legacy':
+        if source:
+            raise ValueError('--starter-file requires mode starter in branding/powerpoint.json')
+        return b''
+    relative = Path(config.get('template', ''))
+    target = (MICHAEL_DIR / relative).resolve()
+    if relative.is_absolute() or not target.is_relative_to((MICHAEL_DIR / 'runtime' / 'brand').resolve()):
+        raise ValueError('The starter must be stored under Michael/runtime/brand/')
+    digest = config.get('sha256', '')
+    if not re.fullmatch('[0-9a-f]{64}', digest):
+        raise ValueError('Declare the approved starter SHA-256 in branding/powerpoint.json')
+    raw = load_starter_template(Path(source).expanduser().resolve() if source else target)
+    if raw is None:
+        raise ValueError('Required PowerPoint starter missing; supply provision.py --starter-file PATH (see docs/POWERPOINT_TEMPLATE.md)')
+    if hashlib.sha256(raw).hexdigest() != digest:
+        raise ValueError('PowerPoint starter does not match branding/powerpoint.json SHA-256')
+    if source and not check:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Validated bytes only; atomic replacement keeps the existing asset intact on failure.
+        import tempfile
+        with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as tmp:
+            tmp.write(raw)
+            temporary = Path(tmp.name)
+        try:
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return raw
+
+
 # ---- Open WebUI ---------------------------------------------------------------------------------
 
 
@@ -405,9 +480,24 @@ def get_tool(base, token, tool_id):
         raise
 
 
+def bundle_delivery_source(source):
+    """Embed shared owners so each DB tool remains independently distributable."""
+    import re
+    for module in ('office_delivery', 'visual_figure'):
+        pattern = rf'^from {module} import [^\n]+$'
+        if re.search(pattern, source, re.MULTILINE):
+            helper = (MICHAEL_DIR / 'tools' / (module + '.py')).read_text()
+            source = re.sub(pattern, lambda match: helper, source, count=1, flags=re.MULTILINE)
+    return source
+
+
+def tool_source(tool):
+    return bundle_delivery_source(tool['file'].read_text())
+
+
 def upsert_tool(base, token, tool, apply):
     """'created', 'updated' or 'unchanged' for the tool source and its grant."""
-    source = tool['file'].read_text()
+    source = tool_source(tool)
     form = {
         'id': tool['id'],
         'name': tool['name'],
@@ -444,6 +534,8 @@ def ensure_valves(base, token, tool, wanted, apply):
 def run(argv=None):
     ap = argparse.ArgumentParser(description='Create or update the Lenovo-styled office document tools in Open WebUI.')
     ap.add_argument('--check', action='store_true', help='change nothing; exit 1 if a tool or valve differs')
+    ap.add_argument('--slides-only', action='store_true', help='provision only the PowerPoint tool')
+    ap.add_argument('--starter-file', help='validate and stage the approved private PPTX under Michael/runtime/brand')
     args = ap.parse_args(argv)
     ok = True
 
@@ -455,6 +547,16 @@ def run(argv=None):
     env = load_env()
     base = (env.get('OPEN_WEBUI_URL') or f'http://localhost:{env.get("OPEN_WEBUI_PORT") or 3000}').rstrip('/')
 
+    try:
+        starter = configured_starter(args.starter_file, args.check)
+    except (ValueError, OSError) as exc:
+        print(f'[FAIL] {exc}\nRESULT: FAIL')
+        return 1
+    if starter:
+        report(True, f'private starter PPTX ready (sha256 {hashlib.sha256(starter).hexdigest()[:12]})')
+    else:
+        print('[NOTE] branding/powerpoint.json explicitly selects the legacy renderer')
+
     logo, source = load_logo_png()
     if logo:
         report(True, f'logo {source} ready ({len(logo)} bytes as PNG)')
@@ -464,7 +566,7 @@ def run(argv=None):
     try:
         token = get_token(env, base)
         report(True, f'authenticated as admin at {base}')
-        for tool in TOOLS:
+        for tool in (TOOLS[:1] if args.slides_only else TOOLS):
             what = upsert_tool(base, token, tool, not args.check)
             if what == 'unchanged':
                 report(True, f'{tool["id"]}: tool already up to date')
@@ -474,6 +576,8 @@ def run(argv=None):
                 report(True, f'{tool["id"]}: tool {what}')
 
             wanted = dict(tool['valves'])
+            if tool['id'] == 'generate_slide_pptx':
+                wanted[STARTER_VALVE] = base64.b64encode(starter).decode('ascii')
             if logo:
                 wanted[LOGO_VALVE] = base64.b64encode(logo).decode('ascii')
             if ensure_valves(base, token, tool, wanted, not args.check):
@@ -487,7 +591,8 @@ def run(argv=None):
             if not args.check:
                 final = get_tool(base, token, tool['id']) or {}
                 names = {s.get('name') for s in final.get('specs') or []}
-                report(tool['function'] in names, f'{tool["id"]}: exposes {tool["function"]}')
+                for function in [tool['function'], *tool.get('extra_functions', [])]:
+                    report(function in names, f'{tool["id"]}: exposes {function}')
         print('[NOTE] the Office Documents preset that attaches both tools is created by bootstrap/presets.py')
     except ApiError as e:
         report(False, str(e))

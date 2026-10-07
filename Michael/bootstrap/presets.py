@@ -32,9 +32,11 @@ already filled out. Through the authenticated admin API this script:
      the preset works as soon as the connection exists.
 
 Base model: --base-model, else PRESETS_BASE_MODEL, else TRANSLATOR_BASE_MODEL from
-Michael/.env, else "base_model" in models/presets.json (gemma-4-31b-it).
+Michael/.env, else "base_model" in models/presets.json (nemotron-3-ultra).
 
 Options: --check changes nothing and exits 1 when a preset differs; --base-model ID.
+--prompts-only updates existing presets' system text and refreshes the model cache,
+preserving their other live settings. It requires native calling and the approved base.
 Reuses the helpers of davy_connection.py. Standard library only. Secrets are never
 printed: only ids, counts and fixed status text are written.
 """
@@ -350,6 +352,53 @@ def get_function(base, token, function_id):
         raise
 
 
+def refresh_prompts(base, token, presets, base_model, apply, update_base=False):
+    """Preflight every existing preset, then update only system text with read-back checks.
+
+    This is intentionally separate from full reconciliation: prompt edits must not
+    reset live capability overrides, actions, search configuration or access grants.
+    The model update API accepts a full form, not a params-only PATCH.
+    """
+    pending = []
+    for preset in presets:
+        current = get_model(base, token, preset['id'])
+        if current is None:
+            raise ApiError(f'{preset["id"]}: missing preset; run full provisioning first')
+        if ((not update_base and current.get('base_model_id') != base_model)
+                or (current.get('params') or {}).get('function_calling') != 'native'):
+            raise ApiError(f'{preset["id"]}: prompt refresh requires the approved base and native calling')
+        pending.append((preset, current))
+
+    results = []
+    for preset, current in pending:
+        changed = current['params'].get('system') != preset['system'] or (
+            update_base and (current.get('base_model_id') != base_model
+                             or current.get('meta', {}).get('description') != preset['description'])
+        )
+        if changed and apply:
+            # Access grants are omitted deliberately: the API preserves them.
+            form = {k: current[k] for k in ('id', 'name', 'base_model_id', 'meta', 'is_active')}
+            form['params'] = {**current['params'], 'system': preset['system']}
+            if update_base:
+                form['base_model_id'] = base_model
+                form['meta'] = {**form['meta'], 'description': preset['description']}
+            # Detect edits made since preflight rather than overwrite them.
+            if get_model(base, token, preset['id']) != current:
+                raise ApiError(f'{preset["id"]}: changed during preflight; retry after edits finish')
+            call(base, 'POST', '/api/v1/models/model/update', token, form)
+            saved = get_model(base, token, preset['id']) or {}
+            if any(saved.get(k) != v for k, v in form.items()) or grants_of(saved) != grants_of(current):
+                raise ApiError(f'{preset["id"]}: prompt read-back or preservation check failed')
+        results.append((preset['id'], changed))
+
+    if apply:
+        listed = call(base, 'GET', '/api/models?refresh=true', token) or {}
+        ids = {m.get('id') for m in listed.get('data') or []}
+        if any(preset['id'] not in ids for preset in presets):
+            raise ApiError('Prompt refresh saved, but not all presets are visible after cache refresh')
+    return results
+
+
 def upsert_action(base, token, action, apply):
     """Create/update an Action function and activate it (never global). Returns a list of what changed."""
     form = {
@@ -443,8 +492,12 @@ def web_search_enabled(base, token):
 def run(argv=None):
     ap = argparse.ArgumentParser(description='Create or update the model presets of models/presets.json in Open WebUI.')
     ap.add_argument('--check', action='store_true', help='change nothing; exit 1 if a preset differs')
+    ap.add_argument('--prompts-only', action='store_true', help='update only existing system prompts, preserving other live settings')
+    ap.add_argument('--update-base-model', action='store_true', help='with --prompts-only, also migrate the base model and descriptions')
     ap.add_argument('--base-model', help='base model id (default: PRESETS_BASE_MODEL, TRANSLATOR_BASE_MODEL, then presets.json)')
     args = ap.parse_args(argv)
+    if args.update_base_model and not args.prompts_only:
+        ap.error('--update-base-model requires --prompts-only')
     ok = True
 
     def report(passed, msg):
@@ -472,6 +525,20 @@ def run(argv=None):
         token = get_token(env, base)
         case_safety.validate_live(base, token, env)
         report(True, f'authenticated as admin at {base}')
+
+        if args.prompts_only:
+            if args.update_base_model:
+                listed = call(base, 'GET', '/api/models?refresh=true', token) or {}
+                if base_model not in {m.get('id') for m in listed.get('data') or []}:
+                    raise ApiError('Target base model is not available; no presets changed')
+                if not base_model_state(base, token, base_model):
+                    raise ApiError('Target base model needs a public read grant before migration')
+            for pid, changed in refresh_prompts(base, token, presets, base_model, not args.check, args.update_base_model):
+                report(not (args.check and changed), f'{pid}: ' + ('prompt/base/description ' if args.update_base_model else 'prompt ') + (
+                    'would be updated' if args.check and changed else 'updated' if changed else 'already up to date'
+                ))
+            print('RESULT: ' + ('PASS' if ok else 'FAIL'))
+            return 0 if ok else 1
 
         if base_model_state(base, token, base_model):
             report(True, 'base model already registered with public read grant')

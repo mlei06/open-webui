@@ -18,12 +18,15 @@ license: MIT
 # engine renders a NATIVE .pptx with python-pptx: coherent visual system,
 # layered decorative shapes, native charts, icons-in-circles, rich layouts.
 #
-# The deck is saved via the OpenWebUI Files API (with a /cache/files fallback)
+# The deck is registered through the caller-owned OpenWebUI Files API
 # and a clickable download link is emitted in chat.
 #
 # License: MIT — Copyright (c) IANUSTEC.
 #
 # LENOVO STYLE EDITS (everything else is the upstream export, unchanged):
+#   * optional admin-provisioned PPTX starter: preserve masters/layouts and fill native placeholders;
+#     get_slide_layouts exposes its layout library. No template bytes/paths are model arguments.
+#   * caller-owned image upload IDs resolve through Open WebUI storage after ownership checks.
 #   * palette "lenovo" (Lenovo red accent on the dark neutral ramp of
 #     Michael/branding/tokens.json) is the default; "auto" resolves to it and
 #     the other palettes stay selectable by name. Fonts are Segoe UI.
@@ -170,6 +173,12 @@ try:
     _HAS_OWUI_FILES = True
 except Exception:
     _HAS_OWUI_FILES = False
+
+try:
+    from open_webui.models.files import Files as _ImageFiles
+    from open_webui.storage.provider import Storage as _ImageStorage
+except ImportError:
+    _ImageFiles = _ImageStorage = None
 
 # --- OpenWebUI AI image generation (optional) -------------------------------
 try:
@@ -1138,12 +1147,67 @@ async def _ai_image(prompt: str, request, user_dict) -> Optional[bytes]:
     return None
 
 
+from office_delivery import _terminal_context, _terminal_image, _terminal_save, _office_result, _pptx_visual_theme
+
+
+async def _attachment_image(file_id, user_dict):
+    """Read only a caller-owned upload; the model never supplies a storage path."""
+    import asyncio
+
+    denied = 'Image attachment is unavailable or not owned by the current user'
+    user_id = (user_dict or {}).get('id')
+    if not user_id or not isinstance(file_id, str) or not file_id.strip() or len(file_id) > 200 or _ImageFiles is None:
+        raise ValueError(denied)
+
+    def read(row):
+        # Resolve through the configured storage provider only AFTER ownership.
+        path = _ImageStorage.get_file(row.path)
+        with open(path, 'rb') as stream:
+            raw = stream.read(_MAX_IMAGE_BYTES + 1)
+        if len(raw) > _MAX_IMAGE_BYTES:
+            raise ValueError('Image attachment exceeds the image byte limit')
+        return raw
+
+    try:
+        row = _ImageFiles.get_file_by_id(file_id)
+        if inspect.isawaitable(row):
+            row = await row
+        if row is None or row.user_id != user_id or not row.path:
+            raise ValueError(denied)
+        return await asyncio.to_thread(read, row)
+    except ValueError:
+        raise
+    except Exception:
+        raise ValueError(denied) from None
+
+
+def _template_image(raw, max_px):
+    """Validate raster bytes without pre-cropping; the native placeholder crops once."""
+    from PIL import ImageOps
+    try:
+        with Image.open(BytesIO(raw)) as source:
+            if source.width * source.height > 40_000_000:
+                raise ValueError('Image exceeds 40 megapixels')
+            source.load()
+            im = ImageOps.exif_transpose(source).convert('RGBA')
+            im.thumbnail((max_px, max_px), Image.Resampling.LANCZOS)
+            out = BytesIO()
+            im.save(out, 'PNG')
+            return out.getvalue()
+    except Exception:
+        raise ValueError('Image must be a supported raster image of at most 40 megapixels') from None
+
+
 async def _resolve_one_image(item, valves, request, user_dict, ratio=1.4):
     """item may be a dict (image spec) or a string (url / base64 / hint)."""
     if isinstance(item, str):
         item = {"url": item} if item.startswith(("http", "data:")) else {"hint": item}
     if not isinstance(item, dict):
         return None
+    if 'file_id' in item or 'attachment_id' in item:
+        raw = await _attachment_image(item.get('file_id') or item.get('attachment_id'), user_dict)
+        validated = _template_image(raw, valves.max_image_px)
+        return validated if ratio is None else _cover_crop(validated, ratio, valves.max_image_px)
     raw = None
     for k in ("base64", "b64", "data", "image_base64"):
         if item.get(k):
@@ -1164,7 +1228,7 @@ async def _resolve_one_image(item, valves, request, user_dict, ratio=1.4):
             raw = await _ai_image(str(prompt), request, user_dict)
     if not raw:
         return None
-    return _cover_crop(raw, ratio, valves.max_image_px)
+    return _template_image(raw, valves.max_image_px) if ratio is None else _cover_crop(raw, ratio, valves.max_image_px)
 
 
 # ============================================================================
@@ -1855,6 +1919,527 @@ def _r_icon_grid(deck, slide_dict, page, cols=3):
                       font=t["body_font"], line=1.24, space_after=0)
 
 
+# ---- Native starter-template support (Michael) -----------------------------
+# The administrator supplies bytes through valves; the model never supplies a
+# server path. Keep this module self-contained for Open WebUI's tool loader.
+_TEMPLATE_MAX_BYTES = 16 * 1024 * 1024
+_TEMPLATE_MAX_EXPANDED = 64 * 1024 * 1024
+_TEMPLATE_ALIASES = {
+    'cover': 'Title Slide_White', 'section': 'Section Header_White',
+    'title_only': 'Title Only', 'title_body': 'Title and Content',
+    'title_bullets': 'Title and Content', 'content': 'Title and Content',
+    'two_column_text': 'Two Column Slide', 'comparison_two': 'Two Column Slide',
+    'three_column_text': 'Three Column Slide', 'chart': 'Chart Slide',
+    'table': 'Title and Content', 'text_image_right': 'Title w/Image',
+    'image_left_text_right': 'Content w/ Product',
+    'image_full_caption': 'Photo + Statement', 'quote': 'Big Idea',
+    'big_idea': 'Big Idea', 'blank': 'Blank Slide', 'closing': 'Closing Slide',
+}
+
+
+def _open_starter(encoded):
+    import zipfile
+    from xml.etree import ElementTree as ET
+
+    if len(encoded) > (_TEMPLATE_MAX_BYTES * 4 // 3 + 8):
+        raise ValueError('Starter template exceeds the 16 MiB limit')
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+        with zipfile.ZipFile(BytesIO(raw)) as archive:
+            infos = archive.infolist()
+            if len(infos) > 2000 or sum(i.file_size for i in infos) > _TEMPLATE_MAX_EXPANDED:
+                raise ValueError('Starter template package is too large')
+            names = archive.namelist()
+            if 'ppt/presentation.xml' not in names:
+                raise ValueError('Starter template is not a PPTX presentation')
+            if any('vbaproject' in n.lower() or n.startswith(('ppt/embeddings/', 'ppt/activeX/')) for n in names):
+                raise ValueError('Starter template must not contain macros or embedded objects')
+            for name in names:
+                if name.endswith('.rels'):
+                    for rel in ET.fromstring(archive.read(name)):
+                        if rel.get('TargetMode') == 'External' and not rel.get('Type', '').endswith('/hyperlink'):
+                            raise ValueError('Starter template contains externally linked content')
+        return Presentation(BytesIO(raw))
+    except (ValueError, zipfile.BadZipFile, ET.ParseError) as exc:
+        raise ValueError(f'Invalid starter template: {exc}') from None
+
+
+def _starter_layouts(prs):
+    return [layout for master in prs.slide_masters for layout in master.slide_layouts]
+
+
+def _placeholder_kind(ph):
+    return str(ph.placeholder_format.type).split(' ')[0].lower()
+
+
+def _starter_catalog(prs):
+    return [{'name': layout.name, 'placeholders': [
+        {'index': ph.placeholder_format.idx, 'type': _placeholder_kind(ph),
+         'width_inches': round(ph.width / EMU_IN, 2), 'height_inches': round(ph.height / EMU_IN, 2)}
+        for ph in layout.placeholders if _placeholder_kind(ph) not in ('slide_number', 'date', 'footer')
+    ]} for layout in _starter_layouts(prs)]
+
+
+def _placeholder_text(shape, value):
+    """Keep inherited type, geometry, theme and paragraph styles editable."""
+    rows = value if isinstance(value, list) else str(value).split('\n')
+    tf = shape.text_frame
+    tf.clear()
+    for i, row in enumerate(rows):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        if isinstance(row, dict):
+            p.text = str(row.get('text', ''))
+            level = row.get('level', 0)
+            if not isinstance(level, int) or not 0 <= level <= 4:
+                raise ValueError('Bullet level must be an integer from 0 to 4')
+            p.level = level
+        else:
+            p.text = str(row)
+        # Do not assign a font or colour: inherit the actual Lenovo layout.
+
+
+def _starter_layout(prs, data):
+    name = str(data.get('template_layout') or data.get('layout') or 'title_bullets')
+    name = _TEMPLATE_ALIASES.get(name, name)
+    variant = data.get('variant', 'light')
+    if variant not in ('light', 'dark'):
+        raise ValueError('variant must be light or dark')
+    if variant == 'dark' and not data.get('template_layout'):
+        name = name.removesuffix('_White') + '_Black' if name != 'Big Idea' else name
+    matches = [layout for layout in _starter_layouts(prs) if layout.name == name]
+    if len(matches) != 1:
+        raise ValueError(f'Unknown or ambiguous template layout {name!r}; call get_slide_layouts for exact names')
+    return matches[0]
+
+
+def _starter_chart(ph, data, dark=False, report=None):
+    import math
+    from pptx.enum.dml import MSO_THEME_COLOR
+
+    chart_spec = data.get('chart') if isinstance(data.get('chart'), dict) else data
+    raw_type = str(data.get('chart_type', chart_spec.get('type', 'bar'))).lower()
+    if raw_type not in _CHART_TYPE_MAP:
+        raise ValueError('Unsupported chart type')
+    ctype = _CHART_TYPE_MAP[raw_type]
+    labels = chart_spec.get('labels')
+    datasets = chart_spec.get('datasets') or [{'label': 'Value', 'data': chart_spec.get('values')}]
+    if not isinstance(labels, list) or not labels or not isinstance(datasets, list):
+        raise ValueError('Charts require labels and equally sized numeric series')
+    series = []
+    for dataset in datasets:
+        values = dataset.get('data') if isinstance(dataset, dict) else None
+        if not isinstance(values, list) or len(values) != len(labels):
+            raise ValueError('Charts require labels and equally sized numeric series')
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in values):
+            raise ValueError('Chart values must be finite numbers; missing or invalid data is not zero')
+        series.append((str(dataset.get('label', 'Value')), values))
+    circular = ctype in ('PIE', 'DOUGHNUT')
+    if circular and (len(series) != 1 or any(v < 0 for _, values in series for v in values) or not sum(series[0][1])):
+        raise ValueError('Pie/doughnut charts require one nonnegative series with a positive total')
+    if circular and len(labels) > 6:
+        ctype = 'BAR_CLUSTERED'
+        circular = False
+        if report is not None: report.append('Converted a pie with more than six categories to a labelled horizontal bar chart')
+    chart_data = CategoryChartData()
+    chart_data.categories = labels
+    for name, values in series:
+        chart_data.add_series(name, values)
+    chart_type = getattr(XL_CHART_TYPE, ctype, None)
+    if chart_type is None:
+        raise ValueError('Unsupported chart type')
+    chart = ph.insert_chart(chart_type, chart_data).chart
+    chart.has_title = False  # the slide already has its native title placeholder
+    ink = 'FFFFFF' if dark else '000000'
+    chart.font.name = '+mn-lt'
+    chart.font.size = Pt(16)
+    chart.font.color.rgb = RGBColor.from_string(ink)
+    chart.has_legend = circular or len(series) > 1
+    if chart.has_legend:
+        chart.legend.position = XL_LEGEND_POSITION.BOTTOM
+    # Choose readable template scheme colours without making every datum red.
+    palette = ([MSO_THEME_COLOR.ACCENT_5, MSO_THEME_COLOR.ACCENT_3] if dark else
+               [MSO_THEME_COLOR.ACCENT_6, MSO_THEME_COLOR.ACCENT_4])
+    chart.plots[0].vary_by_categories = circular
+    for i, rendered in enumerate(chart.series):
+        targets = list(rendered.points) if circular else [rendered]
+        for j, target in enumerate(targets):
+            target.format.fill.solid()
+            target.format.fill.fore_color.theme_color = palette[(i + j) % len(palette)]
+            target.format.line.color.theme_color = palette[(i + j) % len(palette)]
+            if circular:
+                colors = ['3046AD', '4D144A', '008C95', 'C17A00', '6D73C9', 'BD5E91']
+                target.format.fill.fore_color.rgb = RGBColor.from_string(colors[j % len(colors)])
+                target.format.line.color.rgb = RGBColor.from_string('FFFFFF' if not dark else '1E0013')
+    from pptx.enum.chart import XL_DATA_LABEL_POSITION
+    plot = chart.plots[0]
+    plot.has_data_labels = True
+    dl = plot.data_labels
+    dl.font.name = '+mn-lt'
+    dl.font.size = Pt(14)
+    dl.font.color.rgb = RGBColor.from_string(ink)
+    dl.show_value = not circular
+    if circular:
+        dl.show_category_name = True
+        dl.show_percentage = True
+        dl.position = XL_DATA_LABEL_POSITION.OUTSIDE_END
+    elif 'BAR' in ctype or 'COLUMN' in ctype:
+        dl.position = XL_DATA_LABEL_POSITION.OUTSIDE_END
+    if not circular:
+        for axis in (chart.category_axis, chart.value_axis):
+            axis.tick_labels.font.color.rgb = RGBColor.from_string(ink)
+            axis.tick_labels.font.name = '+mn-lt'
+            axis.tick_labels.font.size = Pt(16)
+            axis.format.line.color.rgb = RGBColor.from_string('ABA8B1' if dark else '4E444E')
+        chart.value_axis.has_major_gridlines = True
+        chart.value_axis.major_gridlines.format.line.color.rgb = RGBColor.from_string('4E444E' if dark else 'E6E2E4')
+        if 'COLUMN' in ctype or 'BAR' in ctype or 'AREA' in ctype:
+            chart.value_axis.minimum_scale = min(0, min(v for _, values in series for v in values))
+
+
+def _json_spec(text):
+    """Accept harmless JSON comments/trailing commas, never evaluate expressions."""
+    out = []; i = 0; quoted = False; escaped = False
+    while i < len(text):
+        char = text[i]
+        if quoted:
+            out.append(char)
+            if escaped: escaped = False
+            elif char == '\\': escaped = True
+            elif char == '"': quoted = False
+            i += 1; continue
+        if char == '"': quoted = True
+        elif text[i:i+2] == '//':
+            end = text.find('\n', i); i = len(text) if end < 0 else end; continue
+        elif text[i:i+2] == '/*':
+            end = text.find('*/', i+2)
+            if end < 0: raise ValueError('Unclosed JSON comment')
+            out.append(' '); i = end+2; continue
+        elif char == ',':
+            j = i+1
+            while j < len(text) and text[j].isspace(): j += 1
+            if j < len(text) and text[j] in ']}': i += 1; continue
+        out.append(char); i += 1
+    cleaned = ''.join(out)
+    cleaned = re.sub(r'("(?:\\.|[^"\\])*")|,\s*(?=[}\]])', lambda match: match.group(1) or '', cleaned)
+    return json.loads(cleaned)
+
+
+def _wrap_table_text(value, width_pt, font_pt=18):
+    """Conservative font metrics plus explicit wraps, shared by planning/rendering."""
+    from PIL import ImageFont
+    font = None
+    for name in ('DejaVuSans.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf'):
+        try: font = ImageFont.truetype(name, font_pt * 4); break
+        except OSError: pass
+    # The fallback budgets wide glyphs instead of assuming monospace averages.
+    def measure(s): return font.getlength(s) / 4 if font else sum(font_pt * (1 if ord(c)>255 else .65) for c in s)
+    limit = max(12, width_pt - 18)
+    lines = []
+    for paragraph in str(value).split('\n'):
+        line = ''
+        for word in paragraph.split(' '):
+            candidate = (line + ' ' + word) if line else word
+            if measure(candidate) <= limit:
+                line = candidate; continue
+            if line: lines.append(line); line = ''
+            for char in word:
+                if line and measure(line + char) > limit: lines.append(line); line = ''
+                line += char
+        lines.append(line)
+    return lines or ['']
+
+
+def _table_pages(data, ph):
+    import math
+    headers = data.get('headers'); rows = data.get('rows', [])
+    if not isinstance(headers, list) or not headers or not isinstance(rows, list):
+        raise ValueError('Table requires headers[] and rows[]')
+    rows = [[row.get(key, '') for key in headers] if isinstance(row, dict) else row for row in rows]
+    if any(not isinstance(row, list) or len(row)!=len(headers) for row in rows):
+        raise ValueError('Every table row must have one cell per header')
+    if len(headers)>30 or len(rows)>500 or sum(len(str(c)) for r in [headers]+rows for c in r)>200000:
+        raise ValueError('Table exceeds the document size limit; split the input into separate decks')
+    groups = [list(range(len(headers)))] if len(headers)<=6 else [[0]+list(range(i,min(i+5,len(headers)))) for i in range(1,len(headers),5)]
+    pages = []
+    font_pt = 18
+    # Reserve bottom room for line-height differences across PowerPoint renderers.
+    available = ph.height / 12700 - 12
+    for indices in groups:
+        hs = [str(headers[i]) for i in indices]; rs = [[str(r[i]) for i in indices] for r in rows]
+        weights = [max(4, min(10, math.sqrt(max(len(hs[i]), sum(len(r[i]) for r in rs)/max(1,len(rs)))))) for i in range(len(hs))]
+        width = ph.width / 12700
+        widths = [width*w/sum(weights) for w in weights]
+        wrapped_header = [_wrap_table_text(v,w,font_pt) for v,w in zip(hs,widths)]
+        header_height = max(.55*72, max(map(len,wrapped_header))*font_pt*1.25+16)
+        capacity = int((available-header_height-16)/(font_pt*1.25))
+        if capacity < 1: raise ValueError('Table headers are too tall; use shorter column headings')
+        page_rows=[];heights=[];used=header_height
+        def emit():
+            pages.append({**data,'headers':['\n'.join(v) for v in wrapped_header],'rows':list(page_rows),
+                          '_table_widths':widths,'_table_heights':[header_height]+list(heights),'_table_font':font_pt})
+        for row in rs:
+            wrapped=[_wrap_table_text(v,w,font_pt) for v,w in zip(row,widths)]
+            count=max(map(len,wrapped))
+            for start in range(0,count,capacity):
+                fragment=['\n'.join(v[start:start+capacity]) for v in wrapped]
+                line_count=min(capacity,count-start)
+                height=max(.5*72,line_count*font_pt*1.25+16)
+                if page_rows and used+height>available:
+                    emit();page_rows=[];heights=[];used=header_height
+                page_rows.append(fragment);heights.append(height);used+=height
+        if page_rows or not rows:emit()
+    return pages
+
+
+def _fit_native_text(shape, maximum=22, minimum=14):
+    text = shape.text
+    if not text: return
+    width = shape.width / 12700
+    height = shape.height / 12700
+    for size in range(maximum, minimum-1, -1):
+        lines = _wrap_table_text(text, width, size)
+        if len(lines) * size * 1.1 <= height: break
+    for paragraph in shape.text_frame.paragraphs:
+        paragraph.font.size = Pt(size)
+        paragraph.space_before = paragraph.space_after = Pt(0)
+        paragraph.line_spacing = 1.0
+
+
+def _prepare_starter_slides(prs, raw_slides, report):
+    """Turn recoverable capacity mismatches into content-preserving slides."""
+    result=[]
+    for number, original in enumerate(raw_slides,1):
+        data=dict(original)
+        try:
+            layout=_starter_layout(prs,data)
+            if any(_placeholder_kind(p)=='chart' for p in layout.placeholders) and any(isinstance(v, list) for v in data.get('values', [])):
+                raise ValueError('For multiple chart series use datasets: [{"label": "Series name", "data": [numbers]}]; values[] must be a single numeric series')
+            if layout.name.startswith('Section Header_'):
+                lead = str(data.get('subtitle', data.get('lead', '')))
+                slot = next(p for p in layout.placeholders if _placeholder_kind(p)=='body')
+                if len(_wrap_table_text(lead, slot.width / 12700, 20)) > 1:
+                    data['template_layout'] = 'Title and Content_Black' if layout.name.endswith('_Black') else 'Title and Content'
+                    data['body'] = lead
+                    layout = _starter_layout(prs,data)
+                    report.append(f'Slide {number}: moved long section description into a full content layout')
+            if layout.name.startswith('Closing Slide') and any(data.get(k) for k in ('body','bullets','takeaways','contact')):
+                content={k:v for k,v in data.items() if k not in ('layout','template_layout','body','bullets','takeaways','contact')}
+                content.update(template_layout='Title and Content_Black' if layout.name.endswith('_Black') else 'Title and Content',
+                               bullets=[str(x) for key in ('body','bullets','takeaways','contact') for x in _as_list(data.get(key,[]))])
+                result.append(content);data={k:v for k,v in data.items() if k in ('layout','template_layout','variant')}
+                report.append(f'Slide {number}: placed closing text on a preceding content slide')
+            if data.get('headers') is not None:
+                ph=next((p for p in layout.placeholders if _placeholder_kind(p)=='object'),None)
+                if ph is None:raise ValueError('Table needs a content placeholder')
+                planned=_table_pages(data,ph)
+            elif isinstance(data.get('columns'),list):
+                capacity=sum(_placeholder_kind(p)=='object' for p in layout.placeholders)
+                if capacity and len(data['columns'])!=capacity:
+                    planned=[{**data,'columns':data['columns'][i:i+capacity]+['']*max(0,capacity-len(data['columns'][i:i+capacity]))} for i in range(0,len(data['columns']),capacity)]
+                    if not planned: planned=[{**data,'columns':['']*capacity}]
+                else:planned=[data]
+            else:planned=[data]
+            if len(planned)>1:
+                report.append(f'Slide {number}: automatically continued across {len(planned)} slides')
+                for page,item in enumerate(planned,1):item['title']=str(data.get('title','Table'))+f' ({page}/{len(planned)})'
+            insight = data.get('insight')
+            if insight and (isinstance(insight, list) or len(str(insight)) > 160):
+                for item in planned:
+                    item.pop('insight', None); item.pop('insight_title', None)
+                planned.append({'template_layout': 'Title and Content_Black' if layout.name.endswith('_Black') else 'Title and Content',
+                                'title': str(data.get('insight_title') or 'Chart interpretation'), 'bullets': _as_list(insight)})
+                report.append(f'Slide {number}: preserved chart interpretation on a following content slide')
+            result.extend(planned)
+        except ValueError as exc:
+            raise ValueError(f'Slide {number}: {exc}') from None
+    if len(result)>200:raise ValueError('Pagination exceeds 200 output slides; split the deck')
+    return result
+
+
+def _starter_table(slide, ph, data, dark=False):
+    from pptx.enum.dml import MSO_THEME_COLOR
+    headers, rows = data['headers'], data.get('rows', [])
+    cells = [headers] + rows
+    heights = data['_table_heights']
+    table = slide.shapes.add_table(len(cells), len(headers), ph.left, ph.top, ph.width, Pt(sum(heights))).table
+    for col, width in zip(table.columns, data['_table_widths']): col.width = Pt(width)
+    for row, height in zip(table.rows, heights): row.height = Pt(height)
+    for ri, row in enumerate(cells):
+        for ci, val in enumerate(row):
+            cell = table.cell(ri, ci)
+            cell.text = str(val)
+            cell.margin_left = cell.margin_right = Pt(6)
+            cell.margin_top = cell.margin_bottom = Pt(5)
+            cell.text_frame.word_wrap = True
+            cell.fill.solid()
+            if ri == 0:
+                cell.fill.fore_color.theme_color = MSO_THEME_COLOR.ACCENT_6
+            else:
+                cell.fill.fore_color.rgb = RGBColor.from_string('1E0013' if dark else 'FFFFFF')
+            for paragraph in cell.text_frame.paragraphs:
+                paragraph.font.name = '+mn-lt'
+                paragraph.font.size = Pt(data['_table_font'])
+                paragraph.space_before = paragraph.space_after = Pt(0)
+                paragraph.line_spacing = 1.15
+                paragraph.font.bold = ri == 0
+                paragraph.font.color.rgb = RGBColor.from_string('FFFFFF' if dark or ri == 0 else '000000')
+    ph._element.getparent().remove(ph._element)
+
+
+def _build_starter(encoded, spec):
+    from copy import deepcopy
+
+    prs = _open_starter(encoded)
+    raw_slides = spec.get('slides')
+    if not isinstance(raw_slides, list) or not 1 <= len(raw_slides) <= 100 or any(not isinstance(s, dict) for s in raw_slides):
+        raise ValueError('Template decks require 1–100 slide objects in slides[]')
+    report = spec['_layout_warnings'] = []
+    raw_slides = _prepare_starter_slides(prs, raw_slides, report)
+    # Validate layout choices before creating anything. Starter slides are usage
+    # instructions, not content to copy into the user's generated presentation.
+    layouts = [_starter_layout(prs, data) for data in raw_slides]
+    for sid in list(prs.slides._sldIdLst):
+        prs.part.drop_rel(sid.rId)
+        prs.slides._sldIdLst.remove(sid)
+    # Discard stale slide sections/custom shows referencing the removed slides.
+    for child in list(prs._element):
+        if child.tag in (qn('p:custShowLst'), qn('p:extLst')):
+            prs._element.remove(child)
+    cp = prs.core_properties
+    for field in ('author', 'last_modified_by', 'subject', 'keywords', 'comments', 'category', 'identifier', 'content_status'):
+        setattr(cp, field, '')
+    cp.title = str(spec.get('title') or 'Presentation')
+    cp.author = str(spec.get('author') or '')
+    cp.created = cp.modified = datetime.now(timezone.utc)
+    cp.revision = 1
+
+    for page, (data, layout) in enumerate(zip(raw_slides, layouts), 1):
+        slide = prs.slides.add_slide(layout)
+        # python-pptx omits latent slide-number placeholders when adding slides.
+        for source in layout.placeholders:
+            if _placeholder_kind(source) == 'slide_number':
+                element = deepcopy(source._element)
+                element.find('.//' + qn('p:cNvPr')).set('id', str(slide.shapes._next_shape_id))
+                slide.shapes._spTree.insert_element_before(element, 'p:extLst')
+                _placeholder_text(slide.placeholders[source.placeholder_format.idx], str(page))
+        placeholders = [ph for ph in slide.placeholders if _placeholder_kind(ph) not in ('slide_number', 'date', 'footer')]
+        texts = [ph for ph in placeholders if _placeholder_kind(ph) not in ('picture', 'chart', 'table')]
+        titles = [ph for ph in texts if _placeholder_kind(ph) in ('title', 'center_title')]
+        bodies = [ph for ph in texts if ph not in titles]
+        if titles:
+            _placeholder_text(titles[0], data.get('title', spec.get('title', '') if page == 1 else ''))
+        if layout.name.startswith('Title Slide_'):
+            subtitle = data.get('subtitle', spec.get('subtitle', ''))
+            byline = ' | '.join(str(v) for v in (data.get('author', spec.get('author')), data.get('date')) if v)
+            if bodies:
+                _placeholder_text(bodies[0], ' | '.join(v for v in (subtitle, byline) if v))
+                _fit_native_text(bodies[0])
+                bodies = []
+        elif layout.name.startswith(('Section Header_', 'Title with Subtitle')):
+            subtitle_ph = next((ph for ph in bodies if _placeholder_kind(ph) == 'body'), None)
+            if subtitle_ph is not None:
+                _placeholder_text(subtitle_ph, data.get('subtitle', data.get('lead', '')))
+                _fit_native_text(subtitle_ph)
+                bodies.remove(subtitle_ph)
+        elif layout.name == 'Big Idea':
+            if bodies:
+                _placeholder_text(bodies.pop(0), data.get('quote', data.get('title', data.get('body', ''))))
+        elif layout.name.startswith('Photo + Statement'):
+            statement = next((ph for ph in bodies if ph.placeholder_format.idx == 18), None)
+            if statement is not None:
+                _placeholder_text(statement, data.get('title', ''))
+                bodies.remove(statement)
+
+        if titles and not layout.name.startswith(('Title Slide_', 'Section Header_')):
+            _fit_native_text(titles[0], 32, 22)
+
+        columns = data.get('columns')
+        if columns is None and ('left' in data or 'right' in data):
+            columns = [data.get('left', {}), data.get('right', {})]
+        if columns is not None:
+            if not isinstance(columns, list) or len(columns) != len(bodies):
+                raise ValueError(f'{layout.name} requires {len(bodies)} columns')
+            for ph, col in zip(bodies, columns):
+                if isinstance(col, dict):
+                    rows = [col['heading']] if col.get('heading') else []
+                    rows += _as_list(col.get('bullets', col.get('points', col.get('body', col.get('description', '')))))
+                    _placeholder_text(ph, rows)
+                else:
+                    _placeholder_text(ph, col)
+        elif bodies:
+            value = data.get('bullets', data.get('body', data.get('points', [])))
+            _placeholder_text(bodies[0], value)
+
+        explicit = data.get('placeholders', {})
+        if not isinstance(explicit, dict):
+            raise ValueError('placeholders must map placeholder indices to text or bullet arrays')
+        text_by_idx = {str(ph.placeholder_format.idx): ph for ph in texts}
+        for idx, value in explicit.items():
+            if str(idx) not in text_by_idx:
+                raise ValueError(f'Placeholder {idx} is not an editable text placeholder in {layout.name}')
+            _placeholder_text(text_by_idx[str(idx)], value)
+
+        chart_ph = next((ph for ph in placeholders if _placeholder_kind(ph) == 'chart'), None)
+        pictures = [ph for ph in placeholders if _placeholder_kind(ph) == 'picture']
+        if pictures and data.get('_img'):
+            pictures[0].insert_picture(BytesIO(data['_img']))
+        elif any(data.get(k) for k in ('image', 'image_url', 'base64', 'image_file_id', 'terminal_image_path')):
+            if not pictures:
+                raise ValueError(f'{layout.name} has no picture placeholder; choose an image layout')
+            raise ValueError('Requested image could not be loaded; no file was generated')
+        if chart_ph is not None and any(k in data for k in ('chart', 'values', 'datasets', 'data')):
+            insight = '\n'.join(str(data[k]) for k in ('insight_title', 'insight') if data.get(k))
+            if insight:
+                caption_height = Inches(0.85)
+                left, top, width, height = chart_ph.left, chart_ph.top, chart_ph.width, chart_ph.height
+                chart_ph.left, chart_ph.top, chart_ph.width, chart_ph.height = left, top, width, height - caption_height
+                caption = slide.shapes.add_textbox(chart_ph.left, chart_ph.top + chart_ph.height, chart_ph.width, caption_height)
+                caption.text = insight
+                for paragraph in caption.text_frame.paragraphs:
+                    paragraph.font.name = '+mn-lt'
+                    paragraph.font.color.rgb = RGBColor.from_string('FFFFFF' if layout.name.endswith('_Black') else '000000')
+                _fit_native_text(caption, 16, 14)
+            _starter_chart(chart_ph, data, layout.name.endswith('_Black'), report)
+        if data.get('headers') is not None:
+            if not bodies:
+                raise ValueError('Tables need a content layout with a body placeholder')
+            _starter_table(slide, bodies[0], data, layout.name.endswith('_Black'))
+        # Closing artwork has no placeholders. Any requested extra content must
+        # be explicit, not silently dropped behind the artwork.
+        if not texts and any(data.get(k) for k in ('title', 'body', 'bullets', 'takeaways', 'contact')):
+            if layout.name.startswith('Closing Slide') and set(k for k in ('title', 'body', 'bullets', 'takeaways', 'contact') if data.get(k)) == {'title'} and str(data['title']).strip().lower() in ('thanks', 'thank you', 'thanks.'):
+                pass  # the exact closing artwork already says this
+            else:
+                raise ValueError(f'{layout.name} has no text placeholders; use a content layout for additional text')
+        if data.get('notes'):
+            slide.notes_slide.notes_text_frame.text = str(data['notes'])
+    buf = BytesIO()
+    prs.save(buf)
+    # Do not ship the starter's stale thumbnail (it depicts the instruction deck).
+    import zipfile
+    from xml.etree import ElementTree as ET
+    cleaned = BytesIO()
+    with zipfile.ZipFile(buf) as source, zipfile.ZipFile(cleaned, 'w', zipfile.ZIP_DEFLATED) as target:
+        for info in source.infolist():
+            if info.filename.startswith('docProps/thumbnail.'):
+                continue
+            content = source.read(info.filename)
+            if info.filename == '_rels/.rels':
+                root = ET.fromstring(content)
+                for rel in list(root):
+                    if rel.get('Type', '').endswith('/metadata/thumbnail'):
+                        root.remove(rel)
+                content = ET.tostring(root, encoding='utf-8', xml_declaration=True)
+            elif info.filename == '[Content_Types].xml':
+                root = ET.fromstring(content)
+                for entry in list(root):
+                    if entry.get('PartName', '').startswith('/docProps/thumbnail.'):
+                        root.remove(entry)
+                content = ET.tostring(root, encoding='utf-8', xml_declaration=True)
+            target.writestr(info, content)
+    return cleaned.getvalue(), len(raw_slides)
+
+
 # ============================================================================
 # The Tools class (OpenWebUI native function calling)
 # ============================================================================
@@ -1864,6 +2449,9 @@ class Tools:
         self.valves = self.Valves()
 
     class Valves(BaseModel):
+        starter_template_b64: str = Field(
+            default="", description="Admin-provisioned PPTX starter bytes, base64. Empty uses the legacy renderer; never model-supplied."
+        )
         default_theme: str = Field(
             default="lenovo",
             description="Default theme (lenovo | auto | midnight | forest | ocean | ...). auto = lenovo.",
@@ -1888,7 +2476,7 @@ class Tools:
         emit_status: bool = Field(default=True, description="Emit status events.")
         pptx_export_dir: str = Field(
             default="/app/backend/data/cache/files",
-            description="Fallback directory for saving.",
+            description="Legacy setting; authenticated Files API failures do not write to this directory.",
         )
 
     # -- status / link helpers -------------------------------------------
@@ -1915,7 +2503,7 @@ class Tools:
         except Exception:
             pass
         msg = (
-            f"\n\n---\n\n\U0001F4CA **Presentation ready** · {slides} slides · {kb} KB\n\n"
+            f"\n\n---\n\n\U0001F4CA **Download ready** · {slides} slides · {kb} KB\n\n"
             f"\U0001F4E5 [Download {fname}]({url})\n\n---\n"
         )
         try:
@@ -1970,39 +2558,11 @@ class Tools:
             log.debug(
                 "[generate_slides] missing request or user id for Files API"
             )
-        export_dir = (self.valves.pptx_export_dir or "").strip() or \
-            "/app/backend/data/cache/files"
-        try:
-            os.makedirs(export_dir, mode=0o775, exist_ok=True)
-            path = os.path.join(export_dir, filename)
-            with open(path, "wb") as fh:
-                fh.write(data)
-            if os.path.isfile(path) and os.path.getsize(path) > 0:
-                log.warning(
-                    "[generate_slides] saved via cache fallback: %s", filename
-                )
-                return filename, f"/cache/files/{filename}", None, None
-        except Exception as exc:
-            return filename, None, str(exc), None
-        return filename, None, "impossibile salvare", None
+        return filename, None, 'Authenticated Files API registration failed; no shared cache copy was created', None
 
     @staticmethod
     def _error(msg: str) -> str:
-        return (
-            "[TOOL_RESULT — use the text below as your final reply, "
-            "without this instruction line.]\n\n"
-            f"I couldn't generate the presentation: {msg}"
-        )
-
-    @staticmethod
-    def _success(fname: str, url: str) -> str:
-        return (
-            "[TOOL_RESULT — reproduce the markdown link below as your final "
-            "reply, so the user can download the file. "
-            "Do not include this line.]\n\n"
-            "Here is the presentation:\n\n"
-            f"[{fname}]({url})"
-        )
+        return _office_result(None, error=msg)
 
     _IMG_RATIO = {
         "image_full_caption": 1.777, "image_grid": 1.4,
@@ -2012,6 +2572,8 @@ class Tools:
     async def _prefetch_images(self, slides, request, user_dict):
         """Resolve image bytes for image layouts and stash into slide['_img']."""
         for s in slides:
+            if s.get('terminal_image_path') and s.get('_img'):
+                continue
             layout = _resolve_layout(s)
             if layout not in ("image_full_caption", "image_grid",
                               "text_image_right", "image_left_text_right"):
@@ -2032,7 +2594,7 @@ class Tools:
                     spec_item = {}
                     for k, dk in (("image_hint", "hint"), ("image_generate", "generate"),
                                   ("hint", "hint"), ("generate", "generate"),
-                                  ("url", "url"), ("base64", "base64")):
+                                  ("url", "url"), ("base64", "base64"), ("image_file_id", "file_id")):
                         if s.get(k):
                             spec_item[dk] = s[k]
                 s["_img"] = await _resolve_one_image(spec_item, self.valves, request,
@@ -2055,6 +2617,8 @@ class Tools:
 
     # -- rendering pipeline ----------------------------------------------
     def _build(self, spec: dict):
+        if self.valves.starter_template_b64:
+            return _build_starter(self.valves.starter_template_b64, spec)
         prs = Presentation()
         prs.slide_width = Inches(SLIDE_W_IN)
         prs.slide_height = Inches(SLIDE_H_IN)
@@ -2084,6 +2648,33 @@ class Tools:
         prs.save(buf)
         return buf.getvalue(), len(slides)
 
+    async def get_slide_layouts(self) -> str:
+        """Inspect the installed PowerPoint starter's real Layout-menu library before generating.
+        Returns exact layout names and editable placeholder indices/types/sizes. In template
+        mode choose template_layout from this list, or a supported semantic layout alias.
+        Keep text short (at most six bullets); use light or dark variants of actual layouts.
+        No template means the legacy renderer's documented layouts apply instead.
+        """
+        if not self.valves.starter_template_b64:
+            return json.dumps({"mode": "legacy", "message": "No starter template installed"})
+        try:
+            prs = _open_starter(self.valves.starter_template_b64)
+            result = {"mode": "template", "layouts": _starter_catalog(prs),
+                      "aliases": _TEMPLATE_ALIASES,
+                      "size_inches": [prs.slide_width / EMU_IN, prs.slide_height / EMU_IN]}
+            picture_layouts = [l.name for l in prs.slide_layouts if any(
+                str(p.placeholder_format.type).startswith('PICTURE') for p in l.placeholders)]
+            selected = 'Title w/Image' if 'Title w/Image' in picture_layouts else next(iter(picture_layouts), None)
+            try:
+                result['visual_theme'] = _pptx_visual_theme(self.valves.starter_template_b64, selected)
+            except Exception as exc:
+                # A chart-only theme limitation must not hide a usable slide library.
+                result['visual_theme'] = None
+                result['visual_theme_warning'] = 'Chart theme unavailable: ' + str(exc)
+            return json.dumps(result)
+        except Exception as exc:
+            return self._error(str(exc))
+
     async def generate_slides(
         self,
         content: str = "{}",
@@ -2096,6 +2687,48 @@ class Tools:
         """Create a high-quality NATIVE PowerPoint (.pptx) presentation and
         return a download link. Use this tool whenever the user asks for slides,
         a presentation, a deck, a pitch or similar.
+
+        Open Terminal: select a registered terminal in the chat first. To embed an
+        existing workspace image, set slide.terminal_image_path to a path relative
+        to ~/workspace, e.g. "assets/product.png". Browse with the native terminal
+        file tools first; do not guess paths or image content. No model vision is
+        needed to insert a file. Only raster images are embedded, not arbitrary
+        PDF/Office files. Do not combine terminal_image_path with another image source.
+        When a terminal is selected, generated decks are also saved to a unique
+        ~/workspace/output/*.pptx by default. Set top-level terminal_output:false
+        for download only, or true to require a selected terminal. The result is a JSON string with exact download_url, workspace_path,
+        terminal_saved and status; preserve the URL and report partial failures.
+
+        First call get_slide_layouts to discover the installed starter. When present,
+        its actual masters, artwork, fonts, colours and layouts are retained. Use
+        slides[{template_layout: "exact name", title, subtitle, body or bullets[],
+        columns:[{heading,bullets:[]}], placeholders:{"index":"text"}, notes}].
+        Optional placeholders maps text indices from get_slide_layouts to strings
+        or arrays of strings/{text,level}; levels 0–4 preserve inherited bullet styles.
+        Alternatively use a supported layout alias plus variant:"light"|"dark".
+        Template aliases: cover, section, title_only, title_body, title_bullets,
+        two_column_text, three_column_text, comparison_two, chart, table,
+        text_image_right, image_left_text_right, image_full_caption, big_idea,
+        quote, blank, closing. Use columns for multi-column layouts; one column
+        per content placeholder. Charts use labels[] and values[] or datasets[].
+        Tables use headers[] and rows[]. Long tables automatically continue onto
+        additional slides with repeated headers; wide tables split into groups
+        retaining their first key column. Supply the complete table, not a smaller
+        sample to satisfy a row limit. Extra column blocks also continue to new
+        slides. Closing text is placed on a content slide before the fixed artwork.
+        Pie/doughnut charts include labels and percentages; more than six categories
+        become a labelled bar chart. Multi-series charts require datasets with
+        label and data, not a matrix in values. Photo layouts accept image_file_id (an actual
+        Open WebUI upload ID owned by the caller), image: {"file_id": "..."},
+        image_url or base64. Use attachment IDs from the conversation, never invent
+        IDs or pass local paths. Images fill native picture placeholders with a
+        centered crop; choose a suitable image layout from get_slide_layouts.
+        omit images unless requested. Closing/blank layouts have no editable text:
+        use the supplied closing artwork without extra title/takeaways/contact.
+        Use another content slide for those. Put unsupported diagrams/KPIs into
+        text/columns or a native chart; the legacy renderer's layouts below apply
+        ONLY when no starter is installed. Template mode ignores visual overrides;
+        do not supply themes, custom fonts, colours or logos. Six short bullets max.
 
         The `content` parameter MUST be a SINGLE JSON string (no text before or
         after, no markdown fence). Structure:
@@ -2172,8 +2805,8 @@ class Tools:
             if cleaned.endswith("```"):
                 cleaned = cleaned[:-3]
             try:
-                spec = json.loads(cleaned.strip())
-            except json.JSONDecodeError as exc:
+                spec = _json_spec(cleaned.strip())
+            except (json.JSONDecodeError, ValueError) as exc:
                 return self._error(f"Invalid JSON: {exc}")
         if not isinstance(spec, dict):
             return self._error("The `content` parameter must be a JSON object.")
@@ -2184,7 +2817,24 @@ class Tools:
         try:
             _pf = [s for s in _as_list(_first(spec, "slides", "sections", "pages",
                                               "deck", default=[])) if isinstance(s, dict)]
-            if any(_resolve_layout(s) in ("image_full_caption", "image_grid",
+            terminal_output = spec.get('terminal_output', bool((__metadata__ or {}).get('terminal_id')))
+            if not isinstance(terminal_output, bool):
+                raise ValueError('terminal_output must be true or false')
+            terminal_context = None
+            if terminal_output or any(s.get('terminal_image_path') for s in _pf):
+                terminal_context = await _terminal_context(__request__, __user__, __metadata__)
+            for item in _pf:
+                if item.get('terminal_image_path'):
+                    if any(item.get(k) for k in ('image', 'image_file_id', 'image_url', 'base64')):
+                        raise ValueError('Choose only one image source per slide')
+                    raw = await _terminal_image(terminal_context, item['terminal_image_path'])
+                    item['_img'] = _template_image(raw, self.valves.max_image_px)
+            if self.valves.starter_template_b64:
+                for item in _pf:
+                    image_spec = ({"file_id": item["image_file_id"]} if item.get("image_file_id") else None) or item.get("image") or item.get("image_url") or ({"base64": item["base64"]} if item.get("base64") else None)
+                    if image_spec:
+                        item["_img"] = await _resolve_one_image(image_spec, self.valves, __request__, __user__, ratio=None)
+            elif any(_resolve_layout(s) in ("image_full_caption", "image_grid",
                    "text_image_right", "image_left_text_right") for s in _pf):
                 await self._emit(__event_emitter__, "Fetching images...", done=False)
                 await self._prefetch_images(_pf, __request__, __user__)
@@ -2192,7 +2842,7 @@ class Tools:
         except Exception as exc:
             import traceback
             traceback.print_exc()
-            return self._error(f"Rendering error: {exc}")
+            return _office_result(None, terminal_requested=bool(terminal_output), error=f'Rendering error: {exc}')
 
         await self._emit(__event_emitter__, "Saving file...", done=False)
         fname, url, err, file_id = await self._save(
@@ -2201,12 +2851,23 @@ class Tools:
         )
         if not url:
             await self._emit(__event_emitter__, "Save failed.", done=True)
-            return self._error(f"Presentation created but saving failed ({err}).")
+            return _office_result(fname, terminal_requested=terminal_output, error=err)
         await self._emit_link(__event_emitter__, fname, url, slides=n,
                               kb=max(1, round(len(data) / 1024)),
                               file_id=file_id)
-        await self._emit(__event_emitter__, "Presentation ready.", done=True)
-        return self._success(fname, url)
+        path = None
+        warning = None
+        if terminal_output:
+            await self._emit(__event_emitter__, "Saving to Open Terminal...", done=False)
+            try:
+                path = await _terminal_save(terminal_context, data, fname)
+            except Exception:
+                warning = 'Open Terminal upload failed; the authenticated download remains available. No terminal output was confirmed.'
+        await self._emit(__event_emitter__, "Presentation ready." if not warning else "Download ready; terminal save failed.", done=True)
+        result = json.loads(_office_result(fname, url, file_id, workspace_path=path,
+                                          terminal_requested=terminal_output, warning=warning))
+        result['layout_adjustments'] = spec.get('_layout_warnings', [])
+        return json.dumps(result, ensure_ascii=False)
 
 
 # ============================================================================

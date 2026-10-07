@@ -1,11 +1,13 @@
 # PATH MCP rollout
 
+[MCP documentation index](MCP.md)
+
 This declaration replaces the local review stack's hand-made PATH connection and preset. It is not evidence of a live rollout or model acceptance. No PATH backend is built or started by Michael Compose.
 
 ## Managed resources
 
 - `mcp/mcp.json` registers Streamable HTTP connection **`path`**, public-read like the other enabled Michael connections. The nine declared and filtered tools are `path_search_records`, `path_get_record_status`, `path_get_record_details`, `path_get_record_history`, `path_get_records`, `path_count_records`, `path_get_activity`, `path_get_filter_values` and `path_lookup_employees`. They replace the old three-tool interface, not aliases.
-- `models/presets.json` updates preset **`path`** in place to **PATH assistant**, using Gemma on Davy, native function calling and `prompts/path-assistant.md`. Only `server:mcp:path`, built-in time/user input and the user_context filter are attached; no mail drafts, web, files or knowledge bases. Name resolution uses PATH's own `path_lookup_employees`; no separate directory or team dependency.
+- `models/presets.json` updates preset **`path`** in place to **PATH assistant**, using Nemotron 3 Ultra on Davy, native function calling and `prompts/path-assistant.md`. Only `server:mcp:path`, built-in time/user input and the user_context filter are attached; no mail drafts, web, files or knowledge bases. Name resolution uses PATH's own `path_lookup_employees`; no separate directory or team dependency.
 - **Office Agent** and **Lenny** retain their existing tools/actions and now declaratively retain their hand-attached `server:mcp:path`. Other presets do not get PATH.
 - `models/user-context.json` gives `path` signed-in name/id only. The filter derives the company itcode from the email local part, not the account UUID. The assistant validates it with PATH and passes `recipient_network_ids`, never `me`. This is an identity filter, not authorization. Names can instead use the explicitly labelled fuzzy `recipient_name` route across current recipient/receiver labels.
 

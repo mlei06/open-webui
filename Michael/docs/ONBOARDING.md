@@ -1,6 +1,6 @@
 # Internal-stack onboarding
 
-Status: Project onboarded; deployment not implemented or tested.
+Status: Historical onboarding plan. Deployment and bootstrap code now exist; see [README](../README.md) for operating instructions and [Model system prompts](SYSTEM_PROMPTS.md) for prompt provisioning. This plan is not evidence of clean-volume integration acceptance or live rollout of every component.
 
 ## Objective
 

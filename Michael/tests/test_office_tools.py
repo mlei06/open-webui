@@ -24,6 +24,7 @@ import zlib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(HERE / 'tools'))
 sys.path.insert(0, str(HERE / 'bootstrap'))
 import office_tools as ot  # noqa: E402
 
@@ -239,7 +240,11 @@ class SlidesToolTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         tool.valves.pptx_export_dir = self.tmp.name
         tool.valves.brand_logo_png_b64 = logo
-        result = asyncio.run(tool.generate_slides(json.dumps({**DECK, **spec})))
+        async def save(data, **kwargs):
+            path = Path(self.tmp.name) / 'synthetic.pptx'; path.write_bytes(data)
+            return path.name, '/api/v1/files/synthetic/content', None, 'synthetic'
+        with mock.patch.object(tool, '_save', save):
+            result = asyncio.run(tool.generate_slides(json.dumps({**DECK, **spec})))
         files = list(Path(self.tmp.name).glob('*.pptx'))
         self.assertEqual(len(files), 1, result)
         return files[0]
@@ -297,7 +302,11 @@ class DocumentsToolTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         tool.valves.docx_export_dir = self.tmp.name
         tool.valves.brand_logo_png_b64 = logo
-        result = asyncio.run(tool.generate_document(content))
+        async def save(data, **kwargs):
+            path = Path(self.tmp.name) / 'synthetic.docx'; path.write_bytes(data)
+            return path.name, '/api/v1/files/synthetic/content', None, 'synthetic'
+        with mock.patch.object(tool, '_save_docx', save):
+            result = asyncio.run(tool.generate_document(content))
         files = list(Path(self.tmp.name).glob('*.docx'))
         self.assertEqual(len(files), 1, result)
         return files[0]
@@ -367,8 +376,9 @@ class DocumentsToolTests(unittest.TestCase):
         with mock.patch.multiple(
             docs, _HAS_OWUI_FILES=True, upload_file_handler=upload, Users=users, UploadFile=FakeUpload, Headers=dict, create=True
         ):
-            name, url, err = asyncio.run(docs.Tools()._save_docx(b'PK', title='My Report', request=object(), user_dict={'id': 'u1'}))
+            name, url, err, file_id = asyncio.run(docs.Tools()._save_docx(b'PK', title='My Report', request=object(), user_dict={'id': 'u1'}))
         self.assertEqual((name, url, err), ('My Report.docx', '/api/v1/files/file-1/content', None))
+        self.assertEqual(file_id, 'file-1')
         self.assertEqual(calls, ['My Report.docx'])
 
     def test_description_tells_the_model_not_to_restyle(self):
@@ -397,7 +407,11 @@ class SlidesDataColoursTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         tool.valves.pptx_export_dir = self.tmp.name
-        asyncio.run(tool.generate_slides(json.dumps({**KPI_DECK, **spec})))
+        async def save(data, **kwargs):
+            path = Path(self.tmp.name) / 'synthetic.pptx'; path.write_bytes(data)
+            return path.name, '/api/v1/files/synthetic/content', None, 'synthetic'
+        with mock.patch.object(tool, '_save', save):
+            asyncio.run(tool.generate_slides(json.dumps({**KPI_DECK, **spec})))
         return list(Path(self.tmp.name).glob('*.pptx'))[0]
 
     def test_series_are_blue_and_neutral_not_red(self):

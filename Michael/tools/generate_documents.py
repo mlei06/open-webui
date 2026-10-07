@@ -41,8 +41,7 @@ license: MIT
 # Both formats converge on the same dict shape, then flow through template
 # merge, OOXML rendering, the (optional) image pipeline and save.
 #
-# The document is saved via the OpenWebUI Files API (with a /cache/files
-# fallback) and a clickable download link is emitted in chat.
+# The document is registered through the caller-owned OpenWebUI Files API and a clickable download link is emitted in chat.
 #
 # License: MIT — Copyright (c) IANUSTEC.
 #
@@ -68,6 +67,8 @@ license: MIT
 # region ── Imports ────────────────────────────────────────────────────────────
 
 from __future__ import annotations
+
+from office_delivery import _terminal_context, _terminal_image, _terminal_save, _office_result
 
 import base64
 import inspect
@@ -4469,34 +4470,6 @@ def _document_title(spec: dict) -> str:
     )
 
 
-def _tool_success_reply(fname: str, download_url: str) -> str:
-    """Build the tool return string after a successful save.
-
-    Verbatim-copy and anti-summary rules live **here** (in the tool
-    output), not in the host LLM system prompt, so open-source installs
-    stay self-contained and the model sees the link next to the rules.
-    """
-    return (
-        "[TOOL_RESULT]\n\n"
-        "OUTPUT_FOR_USER — Your **next assistant message** must be **only** "
-        "the text between the dashed lines (`---`) below. Copy it exactly "
-        "(including the blank line and the `[filename](url)` markdown link). "
-        "Do not add summaries, bullet lists, section outlines, or extra "
-        "sentences. Do not wrap in code fences. Do not use HTML `<a>`; keep "
-        "the markdown link.\n\n"
-        "---\n"
-        "Here is the Word document:\n\n"
-        f"[{fname}]({download_url})\n"
-        "---\n\n"
-        "If you output anything outside the dashed block, the user may lose "
-        "the clickable download link."
-    )
-
-
-# endregion
-
-
-# region ── Tools class (OpenWebUI entry point) ────────────────────────────────
 
 class Tools:
     """OpenWebUI tool entry point. Methods marked ``async def`` and decorated
@@ -4536,8 +4509,7 @@ class Tools:
         docx_export_dir: str = Field(
             default="/app/backend/data/cache/files",
             description=(
-                "Fallback path for .docx export when the OpenWebUI Files API "
-                "is unavailable. Same convention as the slides/dashboard tool."
+                "Legacy setting; authenticated Files API failures do not write here."
             ),
         )
         emit_status: bool = Field(
@@ -4643,10 +4615,11 @@ class Tools:
                 ```` ```md ````, ```` ```yaml ````) are stripped.
 
         Returns:
-            A self-contained ``[TOOL_RESULT]`` string: it includes
-            ``OUTPUT_FOR_USER`` instructions plus the exact lines to copy
-            (markdown link inside ``---`` delimiters). A separate ``message``
-            event may also emit the link for live preview.
+            A JSON string containing status, file_id, file_name, exact download_url,
+            workspace_path and terminal_saved. Preserve the download URL and report
+            partial failures. With a selected terminal, output defaults to
+            ~/workspace/output; terminal_output: false disables that copy.
+            Set terminal_output in JSON or YAML frontmatter.
         """
         try:
             spec_raw = self._parse_content(content)
@@ -4660,6 +4633,16 @@ class Tools:
                 "The `content` parameter must be a JSON object or Markdown "
                 "with YAML frontmatter."
             )
+
+        terminal_output = spec_raw.get('terminal_output', bool((__metadata__ or {}).get('terminal_id')))
+        terminal_context = None
+        try:
+            if not isinstance(terminal_output, bool):
+                raise ValueError('terminal_output must be true or false')
+            if terminal_output:
+                terminal_context = await _terminal_context(__request__, __user__, __metadata__)
+        except Exception as exc:
+            return _office_result(None, terminal_requested=bool(terminal_output), error=str(exc))
 
         # Apply default template when the spec doesn't declare one
         spec_raw.setdefault("template", self.valves.default_template)
@@ -4695,7 +4678,7 @@ class Tools:
         docx_bytes = buf.getvalue()
 
         await self._emit_status(__event_emitter__, "Saving file...", done=False)
-        fname, download_url, save_err = await self._save_docx(
+        fname, download_url, save_err, file_id = await self._save_docx(
             docx_bytes,
             title=_document_title(spec),
             request=__request__,
@@ -4708,21 +4691,20 @@ class Tools:
                 "Save failed.",
                 done=True,
             )
-            return self._error_reply(
-                f"Document was built but saving failed ({save_err})."
-            )
+            return _office_result(fname, terminal_requested=terminal_output, error=save_err)
 
-        # Emit the link ALSO as a live message event so the user sees a
-        # clickable link the moment the file is saved (before the model
-        # finishes streaming its final reply). This is a "preview" channel.
-        await self._emit_link(__event_emitter__, fname, download_url)
-        await self._emit_status(__event_emitter__, "Document ready.", done=True)
-
-        # Authoritative copy of the link is ONLY in this return string (the
-        # model does not see side-channel emitter events). Instructions for
-        # what to say next MUST live here — not in the global LLM system
-        # prompt — so open-source deployments stay self-contained.
-        return _tool_success_reply(fname, download_url)
+        await self._emit_link(__event_emitter__, fname, download_url, file_id=file_id)
+        path = None
+        warning = None
+        if terminal_output:
+            await self._emit_status(__event_emitter__, "Saving to Open Terminal...", done=False)
+            try:
+                path = await _terminal_save(terminal_context, docx_bytes, fname)
+            except Exception:
+                warning = 'Open Terminal upload failed; the authenticated download remains available. No terminal output was confirmed.'
+        await self._emit_status(__event_emitter__, "Document ready." if not warning else "Download ready; terminal save failed.", done=True)
+        return _office_result(fname, download_url, file_id, workspace_path=path,
+                              terminal_requested=terminal_output, warning=warning)
 
     # ── Build pipeline ───────────────────────────────────────────────────────
     async def _build_document(
@@ -4940,16 +4922,8 @@ class Tools:
         title: str,
         request=None,
         user_dict=None,
-    ) -> tuple[str, Optional[str], Optional[str]]:
-        """Persist the DOCX. Returns (filename, download_url, error).
-
-        ``filename`` is the human-readable label shown in chat. The Files API
-        path uploads under that pretty name (it serves via a file id and sets
-        Content-Disposition, so spaces/accents are fine). The ``/cache/files``
-        fallback, however, is a plain static route that 500s on spaces or
-        non-ASCII characters — so there we store and link an **ASCII-safe**
-        slug while still showing the pretty label.
-        """
+    ) -> tuple[str, Optional[str], Optional[str], Optional[str]]:
+        """Register caller-owned bytes; never fall back to a shared cache artifact."""
         display_name = f"{_human_filename(title)}.docx"
 
         # --- Primary: OpenWebUI Files API (visible in UI Files panel) ---
@@ -4974,36 +4948,18 @@ class Tools:
                         user=user_model,
                     ))
                     if file_item:
-                        file_id = getattr(file_item, "id", None)
+                        file_id = file_item.get("id") if isinstance(file_item, dict) else getattr(file_item, "id", None)
                         if file_id:
-                            return display_name, f"/api/v1/files/{file_id}/content", None
+                            return display_name, f"/api/v1/files/{file_id}/content", None, file_id
             except Exception:
                 traceback.print_exc()
 
-        # --- Fallback: cache/files (download only, ASCII-safe path) ---
-        export_dir = (self.valves.docx_export_dir or "").strip() or "/app/backend/data/cache/files"
-        try:
-            os.makedirs(export_dir, mode=0o775, exist_ok=True)
-            # ASCII slug + short suffix: safe for the static route and unique
-            # enough that same-titled docs don't overwrite each other.
-            stored = f"{_slugify(title)}_{uuid.uuid4().hex[:6]}.docx"
-            filepath = os.path.join(export_dir, stored)
-            with open(filepath, "wb") as fh:
-                fh.write(docx_bytes)
-            if os.path.isfile(filepath) and os.path.getsize(filepath) > 0:
-                return display_name, f"/cache/files/{stored}", None
-        except Exception as exc:
-            return display_name, None, str(exc)
-        return display_name, None, "could not save file"
+        return display_name, None, 'Authenticated Files API registration failed; no shared cache copy was created', None
 
     # ── Response helpers ─────────────────────────────────────────────────────
     @staticmethod
     def _error_reply(msg: str) -> str:
-        return (
-            "[TOOL_RESULT — use the text below as your final reply, "
-            "verbatim, unchanged. Do NOT include this instruction line.]\n\n"
-            f"Could not generate the Word document: {msg}"
-        )
+        return _office_result(None, error=msg)
 
     # ── Status emit ──────────────────────────────────────────────────────────
     async def _emit_status(self, emitter, description: str, *, done: bool) -> None:
@@ -5018,18 +4974,16 @@ class Tools:
             pass
 
     @staticmethod
-    async def _emit_link(emitter, fname: str, url: str) -> None:
-        """Emit the download link as its own message event.
-
-        Markdown ``[name](url)`` renders as a clickable anchor in every
-        OpenWebUI version we ship to. Embedding the link in the tool's
-        return value is fragile because (a) the model may strip/rephrase it
-        and (b) HTML <a> tags are rendered as raw text unless preceded by a
-        raw-HTML block. Emitting it here guarantees the user always sees a
-        clickable link, even if the model goes off-script.
-        """
+    async def _emit_link(emitter, fname: str, url: str, *, file_id=None) -> None:
+        """Emit the server-owned URI as a native attachment and a message link."""
         if not emitter:
             return
+        try:
+            await emitter({'type': 'files', 'data': {'files': [
+                {'type': 'file', 'id': file_id, 'name': fname, 'url': url}
+            ]}})
+        except Exception:
+            pass
         try:
             await emitter({
                 "type": "message",
@@ -5048,10 +5002,12 @@ class Tools:
                 "description": (
                     "Generate a professional Word (.docx) document and save "
                     "it via the OpenWebUI Files API. On success, the return "
-                    "value is a self-contained [TOOL_RESULT] blob that "
-                    "includes OUTPUT_FOR_USER instructions and the exact "
-                    "markdown download line — follow that blob, not any "
-                    "external system prompt.\n\n"
+                    "value is a JSON string with status, file_id, file_name, "
+                    "exact download_url, workspace_path and terminal_saved. "
+                    "Preserve the URL and report partial failures. A selected "
+                    "terminal also saves to ~/workspace/output by default; "
+                    "set terminal_output:false in JSON or YAML frontmatter "
+                    "for download only.\n\n"
                     "Use when the user asks for: a Word document, .docx, "
                     "business letter, report, memo, internal note, proposal, "
                     "meeting minutes, contract, policy, manual. NEVER "

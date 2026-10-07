@@ -16,6 +16,7 @@ The file is written with mode 600. What it manages:
   EMPLOYEE_DIRECTORY_SRC    the same for the employee-directory clone (--employee-src).
   QDTS_CASES_SRC            devqdts checkout with Dockerfile.cases (--cases-src).
   QDTS_MCP_API_KEY          a generated shared bearer key, never overwritten.
+  OPEN_TERMINAL_API_KEY     a generated native terminal bearer key, never overwritten.
   QDTS_CUSTOMER_NAMES       plain (the service has no alias mode). No alias key is generated.
                             QDTS_DEVQDTS_DATA is NOT discovered: the operator approves its location.
   MAIL_PROVIDER             smtp when SMTP_HOST is set (the owner's relay), otherwise mock.
@@ -26,7 +27,7 @@ The file is written with mode 600. What it manages:
   MAIL_MCP_API_KEY          a generated random key (the one variable that both compose, for the
                             mail service, and mcp/mcp.json, for the Open WebUI registration, use).
 
-The preset base model is NOT written: the committed default is Gemma and PRESETS_BASE_MODEL is an
+The preset base model is NOT written: the committed default is Nemotron 3 Ultra and PRESETS_BASE_MODEL is an
 optional switch (see .env.example).
 
 MAIL_SMTP_TLS_VERIFY=false RISK. The mail relay's certificate cannot be verified (an internal
@@ -156,6 +157,8 @@ def plan(env, mail_src=None, employee_src=None, cases_src=None):
             notes.append('QDTS_CASES_SRC: no cases checkout found; pass --cases-src PATH')
     elif cases_src and str(Path(cases_src).expanduser().resolve()) != env['QDTS_CASES_SRC'][1].strip():
         notes.append('QDTS_CASES_SRC is already set; it is never overwritten (edit it by hand to change it)')
+    if not have('OPEN_TERMINAL_API_KEY'):
+        wanted.append(('OPEN_TERMINAL_API_KEY', lambda: secrets.token_urlsafe(32), None))
     if not have('QDTS_MCP_API_KEY'):
         wanted.append(('QDTS_MCP_API_KEY', lambda: secrets.token_urlsafe(32), None))
     if not have('QDTS_CUSTOMER_NAMES'):

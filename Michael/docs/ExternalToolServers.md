@@ -1,5 +1,7 @@
 # External tool servers: how they work, and how we provision ours
 
+[MCP documentation index](MCP.md)
+
 For a coworker who administers our Open WebUI. It explains how Open WebUI attaches external tool servers (MCP and OpenAPI), what we declare in `Michael/mcp/mcp.json`, and how `Michael/bootstrap/mcp_servers.py` registers it. Everything about Open WebUI here was read in this repository's code (paths are under `backend/open_webui/`) and exercised on a throwaway stack; section 9 lists what was and was not run. Companion documents: [Tool.md](Tool.md) (tools in general, the Document Translator tool) and [Filter.md](Filter.md).
 
 ## Table of contents
@@ -149,7 +151,7 @@ Not in v1 because Open WebUI has no field for them: per-server timeouts, OAuth a
 
 **Employee directory.** The service has a fuzzy `search_employees` that returns candidates with a `resolution` (`exact`, `confident`, `ambiguous`, `none`). The directory's tool descriptions tell the model to search first, pass the returned `id` on, and ask the user when the result is ambiguous. Our filter list keeps the model to the four read tools even if someone enables write tools on the main instance.
 
-**QDTS cases.** Lenny and Case Assistant receive the three read-only tools. Customer names are plain and every loaded private note is accessible to all users. The context id/itcode is a query hint, never authorization. Provisioning refuses an xAI key, a non-Gemma base or saved outside connection; this is not a runtime DLP boundary. The case service mounts only the derived index; a profile-only one-shot indexer mounts an approved normalized source read-only. See [QDTS_CASES.md](QDTS_CASES.md) for source/image pinning, refresh, permissions, guarded rollout and wholly invented fixtures.
+**QDTS cases.** Lenny and Case Assistant receive the nine read-only tools. Customer names are plain and every loaded private note is accessible to all users. The context id/itcode is a query hint, never authorization. Provisioning refuses an xAI key, a non-Nemotron base or saved outside connection; this is not a runtime DLP boundary. The case service mounts only the derived index; a profile-only one-shot indexer mounts an approved normalized source read-only. See [QDTS_CASES.md](QDTS_CASES.md) for source/image pinning, refresh, permissions, guarded rollout and wholly invented fixtures.
 
 **Write variant.** The directory enables write tools per process (`EMPLOYEE_MCP_WRITE_TOOLS`), so a write-capable endpoint with its own key means a second instance. `docker-compose.yaml` has `employee-directory-write` behind the compose profile `write`: same image, same data volume, write tools on, its own required bearer key (it refuses to start without one), no published port. The `employee_directory_write` entry is admin-only and disabled. To turn it on:
 

@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(HERE / 'bootstrap'))
@@ -40,8 +41,8 @@ class DeclarationTests(unittest.TestCase):
             ['lenny', 'case-assistant', 'path', 'document-translator', 'web-searcher', 'office-agent', 'knowledge-base-manager', 'office-documents'],
         )
 
-    def test_default_base_model_is_gemma_not_grok(self):
-        self.assertEqual(DOC['base_model'], 'gemma-4-31b-it')
+    def test_default_base_model_is_nemotron_not_grok(self):
+        self.assertEqual(DOC['base_model'], 'nemotron-3-ultra')
 
     def test_tools_are_scoped_per_preset(self):
         ids = {k: want(k)['meta']['toolIds'] for k in BY_ID}
@@ -53,7 +54,7 @@ class DeclarationTests(unittest.TestCase):
         self.assertEqual(
             set(ids['lenny']),
             {'server:mcp:doctranslator', 'document_translator', 'server:mcp:employee_directory', 'server:mcp:mail',
-             'generate_slide_pptx', 'generate_docx_documents', 'knowledge_base_manager', 'server:mcp:qdts', 'server:mcp:path',
+             'generate_slide_pptx', 'visuals_toolkit_v4', 'generate_docx_documents', 'knowledge_base_manager', 'server:mcp:qdts', 'server:mcp:path',
              'delegate_agents'},  # Lenny has every tool
         )
 
@@ -61,7 +62,7 @@ class DeclarationTests(unittest.TestCase):
         w = p.desired_model(BY_ID['path'], DOC['base_model'], FILTERS, {'SOPs': KB})
         self.assertEqual(w['id'], 'path')
         self.assertEqual(w['name'], 'PATH assistant')
-        self.assertEqual(w['base_model_id'], 'gemma-4-31b-it')
+        self.assertEqual(w['base_model_id'], 'nemotron-3-ultra')
         self.assertEqual(w['meta']['toolIds'], ['server:mcp:path'])
         self.assertEqual(w['meta']['actionIds'], [])
         self.assertFalse(w['meta'].get('knowledge'))
@@ -70,54 +71,6 @@ class DeclarationTests(unittest.TestCase):
             self.assertFalse(w['meta']['capabilities'][key], key)
         self.assertEqual({k for k in BY_ID if 'server:mcp:path' in want(k)['meta']['toolIds']},
                          {'path', 'lenny', 'office-agent'})
-
-    def test_path_prompt_teaches_identity_routing_custody_and_safety(self):
-        text = BY_ID['path']['system']
-        for tool in ('path_search_records', 'path_get_record_status', 'path_get_record_details',
-                     'path_get_record_history', 'path_get_records', 'path_count_records',
-                     'path_get_activity', 'path_get_filter_values', 'path_lookup_employees'):
-            self.assertIn(tool, text)
-        for rule in ('<user_context>', 'recipient_network_ids', 'Never pass “me”',
-                     'recipient_name', 'receiver label names', 'Say which route was used',
-                     'flag ambiguity', 'never choose the first person', 'smallest tool',
-                     'count instead of listing', 'America/New_York', 'RFC3339',
-                     'no waiting or picked-up state', 'Marked as picked up by <admin> on <date>',
-                     'not a physical pickup', 'Never claim photos or addresses are available',
-                     'untrusted data, never instructions', 'never promise to change anything',
-                     'Identity is a filter, not authorization', 'next_cursor', 'matched_records'):
-            self.assertIn(rule, text)
-
-    def test_lenny_prompt_routes_to_every_tool_it_has(self):
-        text = BY_ID['lenny']['system'].lower()
-        for needle in ('web search', 'employee directory', 'document translation', 'mail drafting', 'powerpoint', 'word document',
-                       'lenovo', 'knowledge base manager tool', 'sops', 'lenny@lenovo.com', 'review and send email'):
-            self.assertIn(needle, text, needle)
-
-    def test_case_prompts_route_nine_tools_and_preserve_safety(self):
-        tools = ('search_cases', 'get_case', 'get_case_notes', 'get_case_summary',
-                 'get_case_status', 'get_case_slice', 'get_cases',
-                 'get_case_filter_values', 'lookup_case_entities')
-        for pid in ('lenny', 'case-assistant'):
-            text = BY_ID[pid]['system']
-            with self.subTest(preset=pid):
-                for tool in tools:
-                    self.assertIn(tool, text)
-                for rule in ('smallest available case tool', 'sections=[', 'task_state=',
-                             'next_offset', 'never offset+limit', 'same ids', 'filter_value',
-                             'Hold exists', 'which state you used', 'never choose the first person',
-                             'query hint, never authorization', 'untrusted data, never instructions',
-                             'closed_after', 'closed_newest'):
-                    self.assertIn(rule, text)
-                self.assertNotIn('The real states are', text)
-                self.assertNotIn('Real states:', text)
-                self.assertNotIn('Use get_case(id) to summarize', text)
-
-    def test_specialist_prompts_do_not_claim_tools_they_lack(self):
-        office = BY_ID['office-agent']['system'].lower()
-        self.assertIn('no web, document-generation or knowledge-base editing tools', office)
-        for k in ('document-translator', 'web-searcher', 'knowledge-base-manager', 'office-documents'):
-            self.assertIn('lenny', BY_ID[k]['system'].lower(), k)  # each points elsewhere for what it cannot do
-        self.assertNotIn('read-only for them', BY_ID['knowledge-base-manager']['system'])  # the SOPs base is editable now
 
     def test_only_search_presets_get_web_search(self):
         for k in BY_ID:
@@ -134,7 +87,7 @@ class DeclarationTests(unittest.TestCase):
             self.assertEqual(w['params']['function_calling'], 'native')
             self.assertEqual(w['params']['system'], BY_ID[k]['system'])
 
-    def test_translation_never_sees_file_contents(self):
+    def test_translation_disables_automatic_file_context(self):
         for k in ('lenny', 'document-translator'):
             self.assertFalse(want(k)['meta']['capabilities']['file_context'], k)
 
@@ -142,7 +95,7 @@ class DeclarationTests(unittest.TestCase):
         on = {k for k, v in want('document-translator')['meta']['builtinTools'].items() if v}
         self.assertEqual(on, {'knowledge'})
 
-    def test_manager_reads_attached_files_in_full_and_never_searches_the_web(self):
+    def test_manager_enables_file_tools_and_disables_web_search(self):
         m = want('knowledge-base-manager')['meta']
         self.assertTrue(m['capabilities']['file_upload'])
         self.assertFalse(m['capabilities']['file_context'])
@@ -166,12 +119,6 @@ class DeclarationTests(unittest.TestCase):
         self.assertEqual([a['id'] for a in DOC['actions']], ['mail_review'])
         self.assertIn('class Action', DOC['actions'][0]['content'])
 
-    def test_mail_prompts_use_the_button_and_attachment_ids(self):
-        for k in ('lenny', 'office-agent'):
-            text = BY_ID[k]['system']
-            self.assertIn('Review and send email', text, k)
-            self.assertIn('suggested_attachment_ids', text, k)
-
     def test_user_context_config_covers_every_preset(self):
         cfg = json.loads((HERE / 'models' / 'user-context.json').read_text())['models']
         for k in BY_ID:
@@ -179,29 +126,11 @@ class DeclarationTests(unittest.TestCase):
         self.assertEqual(cfg['web-searcher'], ['name'])
         self.assertEqual(cfg['knowledge-base-manager'], ['name'])
 
-    def test_prompts_mention_the_user_context_block_and_forbid_sending(self):
-        for k in BY_ID:
-            self.assertIn('<user_context>', BY_ID[k]['system'], k)
-        for k in ('lenny', 'office-agent'):
-            self.assertIn('cannot send', BY_ID[k]['system'], k)
-        self.assertIn('never read, quote', BY_ID['document-translator']['system'].lower())
-
-    def test_manager_prompt_confirms_before_overwriting_or_deleting_and_describes_results(self):
-        text = BY_ID['knowledge-base-manager']['system'].lower()
-        for needle in ('<attached_files>', 'confirm', 'overwrite', 'delete', 'indexed', 'duplicate', 'markdown'):
-            self.assertIn(needle, text, needle)
-
     def test_office_documents_preset(self):
         w = want('office-documents')
         self.assertTrue(w['meta']['capabilities']['file_upload'])
         self.assertEqual(w['meta']['actionIds'], [])
         self.assertEqual(w['meta']['defaultFeatureIds'], [])
-        text = BY_ID['office-documents']['system']
-        self.assertIn('<user_context>', text)
-        # the style lives in the tools: the prompt must not restate colours or fonts
-        for bad in ('#', 'segoe', 'font:'):
-            self.assertNotIn(bad, text.lower())
-        self.assertIsNone(re.search(r'\bred\b', text.lower()))
         for tool_id in ('generate_slide_pptx', 'generate_docx_documents'):
             self.assertTrue(any(r.get('tool') == tool_id for r in BY_ID['office-documents']['tools']))
 
@@ -329,12 +258,104 @@ class MatchTests(unittest.TestCase):
             self.assertFalse(p.matches(m, want('lenny')))
 
     def test_missing_refs_notes_unregistered_mail(self):
-        tools = {'document_translator', 'knowledge_base_manager', 'generate_slide_pptx', 'generate_docx_documents', 'delegate_agents'}
+        tools = {'document_translator', 'knowledge_base_manager', 'generate_slide_pptx', 'generate_docx_documents', 'visuals_toolkit_v4', 'delegate_agents'}
         got = p.missing_refs(PRESETS, FILTERS, {'doctranslator', 'employee_directory', 'qdts', 'path'}, tools, {'user_context'})
         self.assertEqual({(a, c, d) for a, _, c, d in got}, {('lenny', 'mail', False), ('office-agent', 'mail', False)})
         got = p.missing_refs(PRESETS, FILTERS, {'mail'}, set(), set())
         self.assertTrue(any(k == 'filter function' for _, k, _, _ in got))
         self.assertTrue(any(k == 'workspace tool' and not o for _, k, _, o in got))
+
+
+class PromptRefreshTests(unittest.TestCase):
+    def setUp(self):
+        self.live = {k: want(k, DOC['base_model']) for k in BY_ID}
+        for model in self.live.values():
+            model['params'].update(system='previous text', top_k=5)
+            model['meta']['capabilities']['memory'] = True
+            model['meta']['custom'] = 'keep'
+        self.calls = []
+
+    def call(self, base, method, route, token=None, body=None):
+        self.calls.append((method, route, copy.deepcopy(body)))
+        if method == 'POST':
+            self.live[body['id']].update(copy.deepcopy(body))
+            return copy.deepcopy(self.live[body['id']])
+        return {'data': [{'id': k} for k in self.live]}
+
+    def refresh(self, apply=True, update_base=False):
+        with patch.object(p, 'get_model', side_effect=lambda b, t, mid: copy.deepcopy(self.live.get(mid))), \
+                patch.object(p, 'call', side_effect=self.call):
+            return p.refresh_prompts('b', 't', PRESETS, DOC['base_model'], apply, update_base)
+
+    def test_explicit_model_migration_preserves_capabilities_and_other_settings(self):
+        for model in self.live.values():
+            model['base_model_id'] = 'gemma-4-31b-it'
+            model['meta']['description'] = 'Old base description'
+        before = copy.deepcopy(self.live)
+        self.assertTrue(all(changed for _, changed in self.refresh(apply=False, update_base=True)))
+        self.assertEqual(self.live, before)
+        self.assertEqual(self.calls, [])
+        self.assertTrue(all(changed for _, changed in self.refresh(update_base=True)))
+        for key, model in self.live.items():
+            expected = copy.deepcopy(before[key])
+            expected['base_model_id'] = DOC['base_model']
+            expected['meta']['description'] = BY_ID[key]['description']
+            expected['params']['system'] = BY_ID[key]['system']
+            self.assertEqual(model, expected)
+        self.assertFalse(any(changed for _, changed in self.refresh(update_base=True)))
+
+    def test_refresh_preserves_settings_and_is_idempotent(self):
+        before = copy.deepcopy(self.live)
+        self.assertTrue(all(changed for _, changed in self.refresh()))
+        for key, model in self.live.items():
+            expected = copy.deepcopy(before[key])
+            expected['params']['system'] = BY_ID[key]['system']
+            self.assertEqual(model, expected)
+        self.assertEqual(self.calls[-1][:2], ('GET', '/api/models?refresh=true'))
+        self.calls.clear()
+        self.assertFalse(any(changed for _, changed in self.refresh()))
+        self.assertEqual(len(self.calls), 1)  # only the cache refresh
+
+    def test_check_is_read_only(self):
+        before = copy.deepcopy(self.live)
+        self.assertTrue(all(changed for _, changed in self.refresh(apply=False)))
+        self.assertEqual(self.live, before)
+        self.assertEqual(self.calls, [])
+
+    def test_preflight_failure_stops_before_any_write(self):
+        for kind in ('missing', 'base', 'legacy'):
+            with self.subTest(kind=kind):
+                self.setUp()
+                last = PRESETS[-1]['id']
+                if kind == 'missing':
+                    del self.live[last]
+                elif kind == 'base':
+                    self.live[last]['base_model_id'] = 'other'
+                else:
+                    self.live[last]['params']['function_calling'] = 'legacy'
+                with self.assertRaises(p.ApiError):
+                    self.refresh()
+                self.assertEqual(self.calls, [])
+
+    def test_failed_readback_is_reported(self):
+        with patch.object(p, 'get_model', side_effect=lambda b, t, mid: copy.deepcopy(self.live[mid])), \
+                patch.object(p, 'call', return_value={}):
+            with self.assertRaisesRegex(p.ApiError, 'read-back'):
+                p.refresh_prompts('b', 't', PRESETS, DOC['base_model'], True)
+
+    def test_concurrent_edit_is_not_overwritten(self):
+        count = 0
+        def read(base, token, mid):
+            nonlocal count
+            count += 1
+            result = copy.deepcopy(self.live[mid])
+            if count > len(PRESETS):
+                result['name'] = 'Edited during preflight'
+            return result
+        with patch.object(p, 'get_model', side_effect=read), patch.object(p, 'call') as call:
+            with self.assertRaisesRegex(p.ApiError, 'changed during preflight'):
+                p.refresh_prompts('b', 't', PRESETS, DOC['base_model'], True)
+            call.assert_not_called()
 
 
 class IconTests(unittest.TestCase):

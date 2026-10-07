@@ -1,7 +1,7 @@
 """Fail closed before provisioning plain internal case data (secret-free errors)."""
 from davy_connection import ApiError, base_model_of, call, norm
 
-DAVY_GEMMA = 'gemma-4-31b-it'
+DAVY_NEMOTRON = 'nemotron-3-ultra'
 
 
 def validate_env(env, base_model=None):
@@ -10,8 +10,8 @@ def validate_env(env, base_model=None):
         raise ApiError('QDTS_CUSTOMER_NAMES must be plain: this case service has no alias mode; do not use it with outside models')
     if (env.get('XAI_API_KEY') or '').strip():
         raise ApiError('Plain QDTS customer names refused while XAI_API_KEY is configured; remove the outside connection before provisioning')
-    if (base_model or base_model_of(env)) != DAVY_GEMMA:
-        raise ApiError('Plain QDTS customer names require the Davy Gemma preset base model (gemma-4-31b-it)')
+    if (base_model or base_model_of(env)) != DAVY_NEMOTRON:
+        raise ApiError('Plain QDTS customer names require the Davy Nemotron preset base model (nemotron-3-ultra)')
     urls = [norm(u) for u in env.get('OPENAI_API_BASE_URLS', '').split(';') if u.strip()]
     if len(urls) > 1:
         raise ApiError('Plain QDTS customer names require a single approved Davy connection, not multiple model connections')

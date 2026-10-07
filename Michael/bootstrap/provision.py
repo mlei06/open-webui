@@ -64,6 +64,7 @@ import access
 import case_safety
 import init_env
 import smtp_check
+import office_tools
 from davy_connection import MICHAEL_DIR, ApiError, call, load_env
 
 BOOTSTRAP = Path(__file__).resolve().parent
@@ -225,9 +226,11 @@ def main(argv=None):
     ap.add_argument('--employees', help='employees JSON file to load into the directory (stays outside the repository)')
     ap.add_argument('--update-knowledge', action='store_true', help='overwrite knowledge seed files that were edited in the app')
     ap.add_argument('--env-file', help='private env file (default $MICHAEL_ENV_FILE, else Michael/.env)')
+    ap.add_argument('--starter-file', help='validate and stage the approved PowerPoint starter before provisioning')
     args = ap.parse_args(argv)
 
     if args.env_file:
+        args.env_file = str(Path(args.env_file).expanduser().resolve())
         os.environ['MICHAEL_ENV_FILE'] = args.env_file
     if args.init_env:
         extra = [a for flag, v in (('--mail-src', args.mail_src), ('--employee-src', args.employee_src), ('--cases-src', args.cases_src)) if v for a in (flag, v)]
@@ -242,11 +245,26 @@ def main(argv=None):
     base = base_url(env)
     only = {s for s in args.only.split(',') if s}
     skip = {s for s in args.skip.split(',') if s}
+    known = {s[0] for s in STEPS} | {'wait', 'admin', 'employees', 'smtp', 'access'}
+    if (only | skip) - known:
+        ap.error('Unknown step(s): ' + ', '.join(sorted((only | skip) - known)))
     want = lambda name: (not only or name in only) and name not in skip  # noqa: E731
+    if args.starter_file and not want('office'):
+        ap.error('--starter-file requires the office step')
     run = Run(secret_values(env))
     child_env = {**os.environ}
     if args.env_file:
         child_env['MICHAEL_ENV_FILE'] = args.env_file
+
+    # Fail before creating accounts or changing server configuration when required
+    # artwork is absent or differs from the checked-in declaration.
+    if want('office'):
+        try:
+            office_tools.configured_starter(args.starter_file, args.check)
+        except (ValueError, OSError) as exc:
+            run.fail('office', str(exc))
+            print('RESULT: FAIL')
+            return 1
 
     print(f'Provisioning {base}' + (' (check only: nothing is changed)' if args.check else ''))
     print('== Open WebUI is up')
@@ -301,6 +319,8 @@ def main(argv=None):
             args_ = list(check_args)
         else:
             args_ = ['--update'] if step == 'knowledge' and args.update_knowledge else []
+        if step == 'office' and args.starter_file:
+            args_ += ['--starter-file', str(Path(args.starter_file).expanduser().resolve())]
         run_script(run, step, title, script, args_, child_env, soft, args.check)
 
     if want('employees') and args.employees:

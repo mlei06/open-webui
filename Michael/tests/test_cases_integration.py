@@ -24,7 +24,7 @@ import provision
 class GuardTests(unittest.TestCase):
     ENV = {'OPENAI_API_BASE_URLS': 'https://davy.example.invalid/v1'}
 
-    def test_plain_gemma_allowed(self):
+    def test_plain_nemotron_allowed(self):
         case_safety.validate_env(self.ENV)
         with mock.patch.object(case_safety, 'call', return_value={'OPENAI_API_BASE_URLS': [self.ENV['OPENAI_API_BASE_URLS']], 'OPENAI_API_KEYS': ['synthetic-davy-key']}) as api:
             case_safety.validate_live('http://test', 'not-a-real-token', self.ENV)
@@ -33,7 +33,7 @@ class GuardTests(unittest.TestCase):
     def test_outside_key_models_alias_and_multiple_connections_denied_secret_free(self):
         secret = 'synthetic-test-value-not-a-credential'
         bad = [({'XAI_API_KEY': secret}, None), ({'PRESETS_BASE_MODEL': 'grok'}, None),
-               ({'TRANSLATOR_BASE_MODEL': 'grok'}, None), ({}, 'grok'),
+               ({'TRANSLATOR_BASE_MODEL': 'grok'}, None), ({}, 'grok'), ({}, 'gemma-4-31b-it'),
                ({'QDTS_CUSTOMER_NAMES': 'alias'}, None),
                ({'OPENAI_API_BASE_URLS': 'https://davy.example.invalid/v1;https://outside.example.invalid/v1'}, None)]
         for extra, override in bad:
@@ -132,9 +132,7 @@ class DeclarationTests(unittest.TestCase):
         self.assertEqual(connection['url'], 'http://qdts-cases:8000/mcp')
         self.assertEqual(connection['auth_type'], 'bearer')
         self.assertIsNone(connection['headers'])
-        self.assertEqual(server['tools'], ['search_cases', 'get_case', 'get_case_notes',
-                                         'get_case_summary', 'get_case_status', 'get_case_slice',
-                                         'get_cases', 'get_case_filter_values', 'lookup_case_entities'])
+        self.assertEqual(set(server['tools']), {'search_cases','aggregate_cases','search_product','search_team','search_customer','get_case','get_case_notes','get_case_summary','get_case_status','get_case_slice','get_cases','get_case_filter_values','lookup_case_entities'})
         self.assertEqual(connection['config']['function_name_filter_list'], ','.join(server['tools']))
         self.assertEqual(server['tools'], server['function_name_filter_list'])
         self.assertEqual(server['access'], {'type': 'public'})
@@ -145,11 +143,11 @@ class DeclarationTests(unittest.TestCase):
         for pid in ('lenny', 'case-assistant'):
             model = presets.desired_model(by_id[pid], doc['base_model'], doc['filter_ids'])
             self.assertIn('server:mcp:qdts', model['meta']['toolIds'])
-            text = by_id[pid]['system']
-            for word in ('person', 'Hold', 'Cancel', 'Verify', 'closed_after', 'closed_newest', 'get_case_notes', 'untrusted'):
-                self.assertIn(word, text)
+            self.assertEqual(model['params']['system'], by_id[pid]['system'])
+            self.assertEqual(model['params']['function_calling'], 'native')
+            self.assertIn('user_context', model['meta']['filterIds'])
         ca = presets.desired_model(by_id['case-assistant'], doc['base_model'], doc['filter_ids'])
-        self.assertEqual(ca['meta']['toolIds'], ['server:mcp:qdts'])
+        self.assertEqual(ca['meta']['toolIds'], ['server:mcp:qdts', 'visuals_toolkit_v4'])
         self.assertEqual(by_id['case-assistant']['knowledge_bases'], [])
         self.assertFalse(ca['meta']['capabilities']['web_search'])
         self.assertFalse(ca['meta']['builtinTools']['knowledge'])

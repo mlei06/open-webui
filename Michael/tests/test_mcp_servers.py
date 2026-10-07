@@ -33,8 +33,8 @@ class InventoryTests(unittest.TestCase):
         self.assertFalse(BY_ID['employee_directory_write']['enabled'])
         self.assertEqual(BY_ID['employee_directory_write']['access'], {'type': 'admin'})
 
-    def test_qdts_nine_read_only_tools_and_filter(self):
-        expected = ['search_cases', 'get_case', 'get_case_notes', 'get_case_summary',
+    def test_qdts_thirteen_read_only_tools_and_filter(self):
+        expected = ['search_cases','aggregate_cases','search_product','search_team','search_customer', 'get_case', 'get_case_notes', 'get_case_summary',
                     'get_case_status', 'get_case_slice', 'get_cases',
                     'get_case_filter_values', 'lookup_case_entities']
         self.assertEqual(BY_ID['qdts']['tools'], expected)

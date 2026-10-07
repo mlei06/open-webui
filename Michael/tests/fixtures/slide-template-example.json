@@ -1,0 +1,14 @@
+{
+  "title": "Synthetic project update",
+  "author": "Example Team",
+  "slides": [
+    {"layout": "cover", "title": "Project update", "subtitle": "Synthetic example"},
+    {"layout": "section", "title": "What changed", "subtitle": "Three things to know"},
+    {"layout": "title_bullets", "title": "Progress at a glance", "bullets": ["Discovery complete", "Prototype ready", "Review scheduled"]},
+    {"layout": "two_column_text", "variant": "dark", "title": "From discovery to delivery", "columns": [{"heading": "Completed", "bullets": ["Discovery", "Prototype"]}, {"heading": "Next", "bullets": ["Review", "Delivery"]}]},
+    {"layout": "chart", "variant": "dark", "title": "Illustrative work completed", "chart_type": "bar", "labels": ["Week 1", "Week 2", "Week 3"], "values": [3, 5, 8]},
+    {"layout": "table", "title": "Illustrative milestones", "headers": ["Milestone", "Status"], "rows": [["Discovery", "Complete"], ["Prototype", "Ready"], ["Review", "Scheduled"]]},
+    {"layout": "big_idea", "title": "Ready for review"},
+    {"layout": "closing"}
+  ]
+}

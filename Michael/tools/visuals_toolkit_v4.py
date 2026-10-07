@@ -1,9 +1,9 @@
 """
 title: Visuals Toolkit V4
 author: Cole
-version: 4.0.0
+version: 4.1.0
 license: MIT
-description: Tables, charts, heatmaps, timelines, flowcharts, trees, dashboards, metric grids, pie/donut charts, gauges, Gantt charts, Sankey diagrams, radar charts, waterfall charts, funnels, and candlestick charts. Dark-mode-safe HTML with Plotly, auto-resizing iframes, and fullscreen support. Pure ASCII/Markdown fallback when HTML is unavailable.
+description: Interactive Plotly with slide-themed PNG delivery to authenticated Files and user Terminal output; tables, charts, heatmaps, timelines, flowcharts, trees, dashboards, metric grids, pie/donut charts, gauges, Gantt charts, Sankey diagrams, radar charts, waterfall charts, funnels, and candlestick charts. Dark-mode-safe HTML with Plotly, auto-resizing iframes, and fullscreen support. Pure ASCII/Markdown fallback when HTML is unavailable.
 required_open_webui_version: 0.4.0
 
 tool_instructions: |
@@ -84,8 +84,12 @@ tool_instructions: |
 
 from __future__ import annotations
 
+from office_delivery import _terminal_context, _terminal_image, _terminal_save, _office_result, _pptx_visual_theme, _terminal_plotly
+from visual_figure import _visual_figure, _script_json
+
 import html
 import json
+import math
 from typing import Any, Dict, List, Literal, Set, Union
 
 from pydantic import BaseModel, Field
@@ -140,7 +144,7 @@ class Tools:
     _RADIUS = "12px"
     _BEST_BG = "#14532d"
     _BEST_FG = "#dcfce7"
-    _PLOTLY_CDN = "2.27.0"
+    _PLOTLY_JS = "/static/plotly/plotly.min.js"
 
     def __init__(self) -> None:
         self.valves = self.Valves()
@@ -148,7 +152,7 @@ class Tools:
     class Valves(BaseModel):
         allow_external_cdn: bool = Field(
             True,
-            description="Load Plotly from CDN for interactive charts. If false, uses ASCII fallback.",
+            description="Enable interactive locally packaged Plotly. Legacy valve name retained; false uses text fallback.",
         )
         max_rows: int = Field(250, description="Safety cap for rendered table rows.")
         max_cols: int = Field(60, description="Safety cap for rendered table columns.")
@@ -194,19 +198,12 @@ class Tools:
         return []
 
     def _coerce_float_list(self, value: Any) -> List[float]:
-        v = self._coerce_json(value, "list")
+        v = self._coerce_json(value, 'list')
         if not isinstance(v, list):
-            return []
-        out: List[float] = []
-        for x in v:
-            if isinstance(x, (int, float)) and not isinstance(x, bool):
-                out.append(float(x))
-            else:
-                try:
-                    out.append(float(str(x).strip()))
-                except Exception:
-                    pass
-        return out
+            raise ValueError('Expected numeric list')
+        if any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) for x in v):
+            raise ValueError('Values must be finite numbers; no invented or dropped values')
+        return [float(x) for x in v]
 
     def _resolve_mode(self, mode: OutputMode) -> Literal["embed", "text"]:
         if mode == "auto":
@@ -221,7 +218,10 @@ class Tools:
     # HTML infrastructure
     # ================================================================
 
-    def _wrap_html(self, title: str, body: str) -> str:
+    def _wrap_html(self, title: str, body: str, theme=None) -> str:
+        background = theme['background'] if theme else self._BG
+        panel = background if theme else self._PANEL
+        foreground = theme['foreground'] if theme else self._TEXT
         return f"""<!doctype html>
 <html><head>
 <meta charset="utf-8"/>
@@ -229,8 +229,8 @@ class Tools:
 <title>{html.escape(title)}</title>
 <style>
 :root{{
-  --bg:{self._BG};--panel:{self._PANEL};--header:{self._HEADER};
-  --text:{self._TEXT};--muted:{self._MUTED};--border:{self._BORDER};
+  --bg:{background};--panel:{panel};--header:{self._HEADER};
+  --text:{foreground};--muted:{self._MUTED};--border:{self._BORDER};
   --outer:{self._OUTER};--radius:{self._RADIUS};
 }}
 *,*::before,*::after{{box-sizing:border-box}}
@@ -291,7 +291,7 @@ pre.vis{{
   function resize(){{
     var h=document.documentElement.scrollHeight;
     try{{if(window.frameElement)window.frameElement.style.height=h+"px";}}catch(e){{}}
-    try{{window.parent.postMessage({{type:"iframe-resize",height:h}},"*");}}catch(e){{}}
+    try{{window.parent.postMessage({{type:"iframe:height",height:h}},"*");}}catch(e){{}}
   }}
   window.addEventListener("load",resize);
   window.addEventListener("resize",resize);
@@ -635,6 +635,10 @@ pre.vis{{
         chart_type: str,
         name: str = "",
     ) -> Dict[str, Any]:
+        if not 1 <= len(x) <= 200 or len(x) != len(y):
+            raise ValueError("Chart series must contain 1–200 aligned values")
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in y):
+            raise ValueError("Chart values must be finite numbers")
         t: Dict[str, Any] = {
             "x": x,
             "y": y,
@@ -651,12 +655,25 @@ pre.vis{{
     def _plotly_body(
         self, chart_id: str, traces: List[Dict[str, Any]], layout: Dict[str, Any]
     ) -> str:
-        return f"""<div class="card">
-<div id="{chart_id}" style="width:100%;height:{self.valves.embed_chart_height}px"></div>
-</div>
-<script src="https://cdn.plot.ly/plotly-{self._PLOTLY_CDN}.min.js"></script>
+        width = layout.get('width', 0)
+        height = layout.get('height', self.valves.embed_chart_height)
+        fixed = isinstance(width, int) and width > 0
+        return f"""<div class="card"><div id="{chart_id}-viewport" style="overflow:hidden">
+<div id="{chart_id}" style="width:{str(width)+'px' if fixed else '100%'};height:{height}px;transform-origin:top left"></div>
+</div><p id="{chart_id}-fallback" hidden>Interactive renderer unavailable. Use the native image preview or authenticated download.</p></div>
+<script src="{self._PLOTLY_JS}"></script>
 <script>
-(function(){{Plotly.newPlot("{chart_id}",{json.dumps(traces)},{json.dumps(layout)},{{responsive:true,displayModeBar:false}});}})();
+(function(){{
+ const target=document.getElementById("{chart_id}");
+ const viewport=document.getElementById("{chart_id}-viewport");
+ const fallback=document.getElementById("{chart_id}-fallback");
+ function scale(){{if({str(fixed).lower()}){{const factor=Math.min(1,viewport.clientWidth/{width or 1});target.style.transform='scale('+factor+')';viewport.style.height=({height}*factor)+'px';}}}}
+ scale();window.addEventListener('resize',scale);
+ if(typeof Plotly==='undefined'){{fallback.hidden=false;return;}}
+ Promise.all([document.fonts.load('24px "Liberation Sans"'),document.fonts.ready]).then(function(){{
+ return Plotly.newPlot(target,{_script_json(traces)},{_script_json(layout)},{{responsive:{str(not fixed).lower()},displayModeBar:false}});
+ }}).then(scale).catch(function(){{fallback.hidden=false;}});
+}})();
 </script>"""
 
     # ================================================================
@@ -800,6 +817,8 @@ pre.vis{{
             return f"x and y must have the same length ({len(xl)} vs {len(yl)})."
         if not xl:
             return "No data provided."
+        if len(xl) > 200:
+            raise ValueError('Use at most 200 chart points')
 
         resolved = self._resolve_mode(mode)
         if (
@@ -855,6 +874,13 @@ pre.vis{{
                 return f"Invalid series at index {i}: expected dict."
         if not fixed:
             return "No series provided."
+        if len(fixed) > 12:
+            raise ValueError('Use at most 12 chart series')
+        for item in fixed:
+            xs = self._coerce_json(item.get('x', []), 'list')
+            ys = self._coerce_float_list(item.get('y', []))
+            if not isinstance(xs, list) or not xs or len(xs) != len(ys) or len(xs) > 200:
+                raise ValueError('Each series must contain 1–200 aligned x/y values')
 
         resolved = self._resolve_mode(mode)
         if (
@@ -915,48 +941,29 @@ pre.vis{{
         rl = self._coerce_str_list(row_labels)
         cl = self._coerce_str_list(col_labels)
 
-        fixed: List[List[float]] = []
-        if isinstance(dv, list):
-            for row in dv:
-                rl2 = self._coerce_json(row, "list")
-                if not isinstance(rl2, list):
-                    continue
-                out_row: List[float] = []
-                for v in rl2:
-                    if isinstance(v, (int, float)) and not isinstance(v, bool):
-                        out_row.append(float(v))
-                    else:
-                        try:
-                            out_row.append(float(str(v).strip()))
-                        except Exception:
-                            out_row.append(0.0)
-                fixed.append(out_row)
-
-        if not fixed:
-            return "No valid heatmap data."
-        if len(fixed) > self.valves.max_rows:
-            return f"Too many rows: {len(fixed)} > {self.valves.max_rows}."
-        if not rl:
-            rl = [f"Row {i + 1}" for i in range(len(fixed))]
-        if not cl:
-            cl = [
-                f"Col {j + 1}" for j in range(max((len(r) for r in fixed), default=0))
-            ]
-        cl = cl[: self.valves.max_cols]
-        fixed = [r[: len(cl)] for r in fixed]
-
+        if not isinstance(dv, list) or not dv or not rl or not cl:
+            raise ValueError('Heatmaps require a matrix and actual row/column labels')
+        if len(dv) != len(rl) or len(rl) > self.valves.max_rows or len(cl) > self.valves.max_cols:
+            raise ValueError('Heatmap dimensions exceed limits or mismatch labels')
+        if any(not isinstance(row, list) or len(row) != len(cl) for row in dv):
+            raise ValueError('Heatmap must be rectangular')
+        fixed = []
+        for row in dv:
+            if any(v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)) for v in row):
+                raise ValueError('Heatmap values must be finite numbers or null')
+            fixed.append(list(row))
         resolved = self._resolve_mode(mode)
         if (
             resolved == "text"
             or not self.valves.allow_external_cdn
             or HTMLResponse is None
         ):
-            return self._ascii_heatmap(fixed, rl[: len(fixed)], cl, title)
+            return title + '\n' + '\n'.join(label + ': ' + ', '.join('missing' if v is None else str(v) for v in row) for label, row in zip(rl, fixed))
 
         z: List[List[float]] = []
         for row in fixed[: self.valves.max_rows]:
             rr = row[: len(cl)]
-            rr += [0.0] * (len(cl) - len(rr))
+            # Shape already validated; retain null gaps.
             z.append(rr)
 
         hid = f"h{abs(hash(title)) % 9999999}"
@@ -1404,8 +1411,8 @@ pre.vis{{
                     f'border-radius:var(--radius);padding:12px">'
                     f'<div id="{cid}" style="width:100%;height:300px"></div>'
                     f"<script>"
-                    f'Plotly.newPlot("{cid}",{json.dumps([trace])},'
-                    f"{json.dumps(lcfg)},{{responsive:true,displayModeBar:false}});"
+                    f'Plotly.newPlot("{cid}",{_script_json([trace])},'
+                    f"{_script_json(lcfg)},{{responsive:true,displayModeBar:false}});"
                     f"</script></div>"
                 )
 
@@ -1427,7 +1434,7 @@ pre.vis{{
             else "display:grid;grid-template-columns:repeat(auto-fit,minmax(400px,1fr));gap:16px"
         )
         plotly_script = (
-            f'<script src="https://cdn.plot.ly/plotly-{self._PLOTLY_CDN}.min.js"></script>'
+            f'<script src="{self._PLOTLY_JS}"></script>'
             if has_chart
             else ""
         )
@@ -1648,6 +1655,11 @@ pre.vis{{
                 except ValueError:
                     continue
             return None
+
+        for item in fixed:
+            start = _parse_date(item['start']); end = _parse_date(item['end'])
+            if start is None or end is None or end <= start:
+                raise ValueError('Gantt tasks require valid end-after-start dates; use sequence for undated events')
 
         resolved = self._resolve_mode(mode)
         if (
@@ -2172,3 +2184,110 @@ pre.vis{{
             content=self._wrap_html(title, body),
             headers={"Content-Disposition": "inline"},
         )
+
+    async def render_visualization(
+        self,
+        specification: dict,
+        __request__=None,
+        __user__=None,
+        __metadata__=None,
+        __event_emitter__=None,
+    ) -> Any:
+        """Render one evidence-based Plotly chart inline, register its PNG download and
+        save it to the selected user's ~/workspace/output for PPTX reuse.
+
+        specification: kind bar/line/heatmap/timeline/sequence/gantt, title, unit,
+        ordered categories and series[{name,values}], or shape-matched heatmap
+        row_labels/column_labels/values, or events[{label,date}] (sequence omits
+        dates), or tasks[{label,start,end}]. Optional orientation horizontal/vertical,
+        bar_mode group/stack, axis_type category/date, width/height, picture_layout
+        (actual slide layout), and metadata with exact source/date basis/coverage,
+        Other/Unknown/partial periods/warnings. Use real bounded aggregate values,
+        not search-page totals; do not invent missing dates, zeros or causal claims.
+        Only trusted chart fields are accepted; no JS, Python, URLs or host paths.
+        One normalized Plotly figure supplies browser and PNG; fonts/themes derive
+        from the current PowerPoint starter. Default PNG; format jpeg is optional.
+        Return the exact download_url and confirmed workspace_path from the result.
+        A selected registered Terminal is required. Partial success preserves the
+        verified available asset; report warnings instead of claiming both copies.
+        """
+        import hashlib
+        import uuid
+        from io import BytesIO
+        from fastapi import UploadFile
+        from starlette.datastructures import Headers
+        from open_webui.models.tools import Tools as OfficeTools
+        from open_webui.models.users import Users
+        from open_webui.routers.files import upload_file_handler
+
+        async def status(description, done):
+            if __event_emitter__:
+                try:
+                    await __event_emitter__({'type': 'status', 'data': {'description': description, 'done': done}})
+                except Exception:
+                    pass  # Progress transport must not invalidate confirmed assets.
+
+        workspace_path = None
+        result = {'status': 'error', 'file_id': None, 'file_name': None,
+                  'download_url': None, 'workspace_path': None, 'terminal_saved': False,
+                  'warnings': [], 'error': None}
+        try:
+            if not isinstance(specification, dict):
+                raise ValueError('specification must be an object')
+            context = await _terminal_context(__request__, __user__, __metadata__)
+            valves = await OfficeTools.get_tool_valves_by_id('generate_slide_pptx') or {}
+            theme = _pptx_visual_theme(valves.get('starter_template_b64'),
+                                       specification.get('picture_layout', 'Title w/Image'))
+            figure, info = _visual_figure(specification, theme)
+            image_format = specification.get('format', 'png')
+            if image_format not in ('png', 'jpeg'):
+                raise ValueError('Export format must be png or jpeg')
+            await status('Rendering Plotly chart and saving output...', False)
+            saved = await _terminal_plotly(context, figure, theme, info['width'], info['height'], image_format)
+            workspace_path = saved['workspace_path']
+            result.update(workspace_path=workspace_path, terminal_saved=True, theme=theme,
+                          actual_font=saved['font'], source_metadata=info['metadata'])
+            result['warnings'] = list(info['warnings']) + saved['warnings']
+            raw = await _terminal_image(context, workspace_path)
+            if hashlib.sha256(raw).hexdigest() != saved['sha256']:
+                raise ValueError('Rendered chart changed during transfer')
+            name = workspace_path.rsplit('/', 1)[-1]
+            result.update(file_name=name, sha256=saved['sha256'], width=info['width'], height=info['height'])
+            user = await Users.get_user_by_id((__user__ or {}).get('id'))
+            if not user:
+                raise ValueError('Authenticated chart user is unavailable')
+            try:
+                file = await upload_file_handler(request=__request__,
+                    file=UploadFile(file=BytesIO(raw), filename=name,
+                        headers=Headers({'content-type': 'image/png' if image_format == 'png' else 'image/jpeg'})),
+                    metadata={}, process=False, user=user)
+                file_id = file.get('id') if isinstance(file, dict) else getattr(file, 'id', None)
+                if not file_id:
+                    raise ValueError('Files API registration returned no ID')
+                url = '/api/v1/files/' + str(file_id) + '/content'
+                result.update(status='success', file_id=str(file_id), download_url=url)
+            except Exception:
+                result.update(status='partial_success')
+                result['warnings'].append('Chart saved in Terminal, but authenticated download registration failed; no download link was created.')
+            if result['download_url'] and __event_emitter__:
+                try:
+                    await __event_emitter__({'type': 'files', 'data': {'files': [
+                        {'type': 'image', 'id': result['file_id'], 'name': name, 'url': result['download_url'],
+                         'content_type': 'image/png' if image_format == 'png' else 'image/jpeg'}]}})
+                except Exception:
+                    result['warnings'].append('Image preview event failed; the authenticated download and Terminal output remain available.')
+            figure = saved['figure']
+            cid = 'visual-' + uuid.uuid4().hex
+            body = self._plotly_body(cid, figure['data'], figure['layout'])
+            fonts = '''<style>@font-face{font-family:"Liberation Sans";src:url("/static/plotly/LiberationSans-Regular.ttf")}@font-face{font-family:"Liberation Sans";font-weight:700;src:url("/static/plotly/LiberationSans-Bold.ttf")}</style>'''
+            # Deterministic native image remains visible when scripts/local JS are unavailable.
+            result['instructions'] = 'Interactive HTML is returned. An image preview is requested only when download_url exists; check warnings. Preserve download_url exactly. Use workspace_path for terminal_image_path when terminal_saved is true. Disclose font fallback and coverage warnings.'
+            await status('Chart ready.' if result['status'] == 'success' else 'Terminal chart ready; download unavailable.', True)
+            return HTMLResponse(content=self._wrap_html(specification.get('title', 'Chart'), fonts + body, theme=theme),
+                                headers={'Content-Disposition': 'inline'}), result
+        except Exception as exc:
+            result.update(status='partial_success' if workspace_path else 'error', error=str(exc))
+            if workspace_path:
+                result['warnings'].append('Terminal output is verified; another delivery stage did not finish. Check download_url to see whether Files registration succeeded.')
+            await status('Chart delivery failed.', True)
+            return result

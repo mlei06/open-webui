@@ -69,3 +69,5 @@ by this reconciler. Model capabilities, including vision, are not changed here.
 activation, explicit removals, preservation of unrelated resources, and repeat-run
 idempotence. The application API loads the retained source; a separate read-back
 checks that source, access policy, activation flags and removals match the manifest.
+
+Plotly charts can now export a verified PNG to the selected user’s Terminal output and authenticated Files store while keeping the interactive chat view. See [VISUALS.md](VISUALS.md) for theme/font ownership, installation and tool arguments.

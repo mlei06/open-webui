@@ -3023,6 +3023,30 @@ mimetypes.add_type('application/wasm', '.wasm')
 app.mount('/static', StaticFiles(directory=STATIC_DIR), name='static')
 
 
+@app.get('/c/api/v1/files/{file_id}/content', include_in_schema=False)
+async def redirect_relative_chat_file(
+    file_id: str,
+    attachment: bool = False,
+    user=Depends(get_verified_user),
+):
+    """Recover a known Files API link that lost its leading slash in chat.
+
+    The canonical content route still enforces ownership and file permissions.
+    Only UUID file IDs are accepted; no model-supplied redirect target is used.
+    """
+    from uuid import UUID
+    from starlette.responses import RedirectResponse
+
+    try:
+        canonical_id = str(UUID(file_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail='File not found')
+    if canonical_id != file_id:
+        raise HTTPException(status_code=404, detail='File not found')
+    suffix = '?attachment=true' if attachment else ''
+    return RedirectResponse(f'/api/v1/files/{canonical_id}/content{suffix}', status_code=307)
+
+
 @app.get('/cache/{path:path}')
 async def serve_cache_file(
     path: str,

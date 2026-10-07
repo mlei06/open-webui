@@ -23,11 +23,24 @@
           "description": "Shared translator API key, sent as the bearer token. One key for every Open WebUI user."
         }
       ],
-      "auth": { "type": "bearer", "key_env": "TRANSLATOR_API_KEY" },
-      "access": { "type": "public" },
+      "auth": {
+        "type": "bearer",
+        "key_env": "TRANSLATOR_API_KEY"
+      },
+      "access": {
+        "type": "public"
+      },
       "enabled": true,
-      "tools": ["translation_capabilities", "get_translation_status", "cancel_translation"],
-      "function_name_filter_list": ["translation_capabilities", "get_translation_status", "cancel_translation"]
+      "tools": [
+        "translation_capabilities",
+        "get_translation_status",
+        "cancel_translation"
+      ],
+      "function_name_filter_list": [
+        "translation_capabilities",
+        "get_translation_status",
+        "cancel_translation"
+      ]
     },
     {
       "id": "employee_directory",
@@ -51,11 +64,27 @@
           "description": "Optional bearer key. Set it in .env and the directory then requires it on /mcp; leave it empty for no authentication."
         }
       ],
-      "auth": { "type": "bearer", "key_env": "EMPLOYEE_MCP_API_KEY", "optional": true },
-      "access": { "type": "public" },
+      "auth": {
+        "type": "bearer",
+        "key_env": "EMPLOYEE_MCP_API_KEY",
+        "optional": true
+      },
+      "access": {
+        "type": "public"
+      },
       "enabled": true,
-      "tools": ["search_employees", "get_employee", "get_direct_reports", "get_management_chain"],
-      "function_name_filter_list": ["search_employees", "get_employee", "get_direct_reports", "get_management_chain"]
+      "tools": [
+        "search_employees",
+        "get_employee",
+        "get_direct_reports",
+        "get_management_chain"
+      ],
+      "function_name_filter_list": [
+        "search_employees",
+        "get_employee",
+        "get_direct_reports",
+        "get_management_chain"
+      ]
     },
     {
       "id": "mail",
@@ -64,7 +93,11 @@
       "type": "mcp",
       "transport": "streamable-http",
       "url": "${MAIL_MCP_URL}",
-      "headers": { "X-User-Email": "{{USER_EMAIL}}", "X-Chat-Id": "{{CHAT_ID}}", "X-Message-Id": "{{MESSAGE_ID}}" },
+      "headers": {
+        "X-User-Email": "{{USER_EMAIL}}",
+        "X-Chat-Id": "{{CHAT_ID}}",
+        "X-Message-Id": "{{MESSAGE_ID}}"
+      },
       "env": [
         {
           "name": "MAIL_MCP_URL",
@@ -80,11 +113,28 @@
           "description": "Shared key of the mail service model channel, sent as the bearer token. It can create and read drafts, never send."
         }
       ],
-      "auth": { "type": "bearer", "key_env": "MAIL_MCP_API_KEY" },
-      "access": { "type": "public" },
+      "auth": {
+        "type": "bearer",
+        "key_env": "MAIL_MCP_API_KEY"
+      },
+      "access": {
+        "type": "public"
+      },
       "enabled": true,
-      "tools": ["create_draft", "update_draft", "get_draft", "list_drafts", "discard_draft"],
-      "function_name_filter_list": ["create_draft", "update_draft", "get_draft", "list_drafts", "discard_draft"]
+      "tools": [
+        "create_draft",
+        "update_draft",
+        "get_draft",
+        "list_drafts",
+        "discard_draft"
+      ],
+      "function_name_filter_list": [
+        "create_draft",
+        "update_draft",
+        "get_draft",
+        "list_drafts",
+        "discard_draft"
+      ]
     },
     {
       "id": "qdts",
@@ -108,11 +158,44 @@
           "description": "One shared bearer key for all cases; no identity is bound to it."
         }
       ],
-      "auth": { "type": "bearer", "key_env": "QDTS_MCP_API_KEY" },
-      "access": { "type": "public" },
+      "auth": {
+        "type": "bearer",
+        "key_env": "QDTS_MCP_API_KEY"
+      },
+      "access": {
+        "type": "public"
+      },
       "enabled": true,
-      "tools": ["search_cases", "get_case", "get_case_notes", "get_case_summary", "get_case_status", "get_case_slice", "get_cases", "get_case_filter_values", "lookup_case_entities"],
-      "function_name_filter_list": ["search_cases", "get_case", "get_case_notes", "get_case_summary", "get_case_status", "get_case_slice", "get_cases", "get_case_filter_values", "lookup_case_entities"]
+      "tools": [
+        "search_cases",
+        "aggregate_cases",
+        "search_product",
+        "search_team",
+        "search_customer",
+        "get_case",
+        "get_case_notes",
+        "get_case_summary",
+        "get_case_status",
+        "get_case_slice",
+        "get_cases",
+        "get_case_filter_values",
+        "lookup_case_entities"
+      ],
+      "function_name_filter_list": [
+        "search_cases",
+        "aggregate_cases",
+        "search_product",
+        "search_team",
+        "search_customer",
+        "get_case",
+        "get_case_notes",
+        "get_case_summary",
+        "get_case_status",
+        "get_case_slice",
+        "get_cases",
+        "get_case_filter_values",
+        "lookup_case_entities"
+      ]
     },
     {
       "id": "path",
@@ -136,11 +219,37 @@
           "description": "Optional shared bearer key; leave empty for the approved keyless internal backend. Not an employee identity."
         }
       ],
-      "auth": { "type": "bearer", "key_env": "PATH_MCP_API_KEY", "optional": true },
-      "access": { "type": "public" },
+      "auth": {
+        "type": "bearer",
+        "key_env": "PATH_MCP_API_KEY",
+        "optional": true
+      },
+      "access": {
+        "type": "public"
+      },
       "enabled": true,
-      "tools": ["path_search_records", "path_get_record_status", "path_get_record_details", "path_get_record_history", "path_get_records", "path_count_records", "path_get_activity", "path_get_filter_values", "path_lookup_employees"],
-      "function_name_filter_list": ["path_search_records", "path_get_record_status", "path_get_record_details", "path_get_record_history", "path_get_records", "path_count_records", "path_get_activity", "path_get_filter_values", "path_lookup_employees"]
+      "tools": [
+        "path_search_records",
+        "path_get_record_status",
+        "path_get_record_details",
+        "path_get_record_history",
+        "path_get_records",
+        "path_count_records",
+        "path_get_activity",
+        "path_get_filter_values",
+        "path_lookup_employees"
+      ],
+      "function_name_filter_list": [
+        "path_search_records",
+        "path_get_record_status",
+        "path_get_record_details",
+        "path_get_record_history",
+        "path_get_records",
+        "path_count_records",
+        "path_get_activity",
+        "path_get_filter_values",
+        "path_lookup_employees"
+      ]
     },
     {
       "id": "employee_directory_write",
@@ -164,11 +273,28 @@
           "description": "Bearer key of the write instance. The write instance refuses to start without it."
         }
       ],
-      "auth": { "type": "bearer", "key_env": "EMPLOYEE_WRITE_MCP_API_KEY" },
-      "access": { "type": "admin" },
+      "auth": {
+        "type": "bearer",
+        "key_env": "EMPLOYEE_WRITE_MCP_API_KEY"
+      },
+      "access": {
+        "type": "admin"
+      },
       "enabled": false,
-      "tools": ["search_employees", "get_employee", "create_employee", "update_employee", "delete_employee"],
-      "function_name_filter_list": ["search_employees", "get_employee", "create_employee", "update_employee", "delete_employee"]
+      "tools": [
+        "search_employees",
+        "get_employee",
+        "create_employee",
+        "update_employee",
+        "delete_employee"
+      ],
+      "function_name_filter_list": [
+        "search_employees",
+        "get_employee",
+        "create_employee",
+        "update_employee",
+        "delete_employee"
+      ]
     }
   ]
 }

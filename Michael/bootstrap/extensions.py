@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 from davy_connection import MICHAEL_DIR, ApiError, call, get_token, load_env
+from office_tools import bundle_delivery_source
 
 MANIFEST = MICHAEL_DIR / 'extensions.json'
 
@@ -46,7 +47,7 @@ def reconcile(base, token, doc, apply=False):
         kind, id = item['kind'], item['id']
         endpoint = f'/api/v1/{kind}/id/{id}'
         current = call(base, 'GET', endpoint, token) if id in inventory[kind] else None
-        form = {'id': id, 'name': item['name'], 'content': (MICHAEL_DIR / item['file']).read_text(), 'meta': (current or {}).get('meta') or {}}
+        form = {'id': id, 'name': item['name'], 'content': bundle_delivery_source((MICHAEL_DIR / item['file']).read_text()), 'meta': (current or {}).get('meta') or {}}
         if kind == 'tools':
             form['access_grants'] = item['access_grants']
         source_drift = current is None or any(current.get(k) != form[k] for k in ('name', 'content'))
