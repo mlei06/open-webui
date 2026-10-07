@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Idempotently register the external tool servers of mcp/mcp.json in a running Open WebUI.
 
-mcp/mcp.json (schema: mcp/mcp.schema.json, reference: docs/ExternalToolServers.md) declares
+mcp/mcp.json (schema: mcp/mcp.schema.json, reference: docs/mcp.md) declares
 each server's type, URL, environment variables, auth, access and tool filter. This script is
 the single owner of server registration. Through the authenticated admin API it:
 

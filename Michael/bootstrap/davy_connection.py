@@ -243,7 +243,7 @@ def main():
                 listed = model_ids(call(base, 'GET', f'/openai/models/{idx}', token))
                 report(bool(listed), f'Open WebUI lists {len(listed)} model(s) for connection {idx}')
             except ApiError as e:
-                hint = ' (check the CA bundle and key; see README)' if 'HTTP 5' in str(e) or 'HTTP 4' in str(e) else ''
+                hint = ' (check the CA bundle and key; see docs/deployment.md)' if 'HTTP 5' in str(e) or 'HTTP 4' in str(e) else ''
                 report(False, f'connection {idx} verification failed: {e}{hint}')
     except ApiError as e:
         report(False, str(e))

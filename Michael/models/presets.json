@@ -16,20 +16,19 @@
       "id": "lenny",
       "name": "Lenny",
       "icon": "lenny.svg",
-      "description": "All-in-one assistant: QDTS cases, web search, document translation, employee directory, mail drafting, Lenovo-styled PowerPoint and Word files, and knowledge bases.",
+      "description": "All-in-one assistant: QDTS cases, web search, document translation, mail drafting, charts, and Lenovo-styled PowerPoint and Word files. Can hand heavy or background jobs to specialist agents.",
       "prompt": "lenny.md",
       "tools": [
         {"server": "doctranslator"},
         {"tool": "document_translator"},
-        {"server": "employee_directory"},
         {"server": "mail"},
         {"tool": "generate_slide_pptx"},
         {"tool": "visuals_toolkit_v4"},
         {"tool": "generate_docx_documents"},
-        {"tool": "knowledge_base_manager"},
         {"server": "qdts"},
         {"server": "path"},
-        {"tool": "delegate_agents"}
+        {"tool": "delegate_agents"},
+        {"tool": "workspace_files"}
       ],
       "actions": ["mail_review"],
       "capabilities": {
@@ -45,7 +44,8 @@
         "status_updates": true,
         "usage": false
       },
-      "builtin_tools": ["time", "user_input", "web_search", "files", "knowledge"],
+      "builtin_tools": ["time", "user_input", "web_search", "files"],
+      "knowledge_bases": [],
       "default_features": ["web_search"],
       "params": {}
     },
@@ -55,7 +55,7 @@
       "icon": "case-assistant.svg",
       "description": "Finds and explains internal QDTS cases, owners, history and all notes. Read only; Davy Nemotron only.",
       "prompt": "case-assistant.md",
-      "tools": [{"server": "qdts"}, {"tool": "visuals_toolkit_v4"}],
+      "tools": [{"server": "qdts"}, {"tool": "visuals_toolkit_v4"}, {"tool": "workspace_files"}],
       "knowledge_bases": [],
       "capabilities": {
         "file_upload": false,
@@ -107,7 +107,8 @@
       "prompt": "document-translator.md",
       "tools": [
         {"server": "doctranslator"},
-        {"tool": "document_translator"}
+        {"tool": "document_translator"},
+        {"tool": "workspace_files"}
       ],
       "capabilities": {
         "file_upload": true,
@@ -115,7 +116,7 @@
         "web_search": false,
         "image_generation": false,
         "code_interpreter": false,
-        "terminal": false,
+        "terminal": true,
         "memory": false,
         "builtin_tools": true,
         "citations": true,
@@ -159,7 +160,8 @@
       "tools": [
         {"server": "employee_directory"},
         {"server": "mail"},
-        {"server": "path"}
+        {"server": "path"},
+        {"tool": "workspace_files"}
       ],
       "actions": ["mail_review"],
       "capabilities": {
@@ -213,7 +215,8 @@
       "prompt": "office-documents.md",
       "tools": [
         {"tool": "generate_slide_pptx"},
-        {"tool": "generate_docx_documents"}
+        {"tool": "generate_docx_documents"},
+        {"tool": "workspace_files"}
       ],
       "capabilities": {
         "file_upload": true,
@@ -221,7 +224,7 @@
         "web_search": false,
         "image_generation": false,
         "code_interpreter": false,
-        "terminal": false,
+        "terminal": true,
         "memory": false,
         "builtin_tools": true,
         "citations": false,

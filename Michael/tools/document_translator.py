@@ -30,6 +30,9 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import McpError
 from pydantic import BaseModel, Field
 
+# Replaced by the shared source in tools/workspace_delivery.py when bootstrap/translator_tool.py publishes the tool.
+from workspace_delivery import _terminal_context, _terminal_save, _terminal_download_url, _destination, _delivery_message, _DELIVERY_INSTRUCTIONS
+
 MAX_INLINE_BYTES = 8 * 1024 * 1024  # inline limit of the translator gateway
 TERMINAL_STATUSES = {'succeeded', 'failed', 'cancelled', 'canceled', 'expired'}
 CALL_TIMEOUT_SECONDS = 120
@@ -75,9 +78,12 @@ class Tools:
         target_language: str,
         file_id: Optional[str] = None,
         source_language: str = 'auto',
+        terminal_output: Optional[bool] = None,
+        save_to: Optional[str] = None,
         __user__: Optional[dict] = None,
         __request__: Any = None,
         __files__: Optional[list] = None,
+        __metadata__: Optional[dict] = None,
         __event_emitter__: Optional[Callable[[dict], Awaitable[None]]] = None,
     ) -> dict:
         """
@@ -89,10 +95,15 @@ class Tools:
         :param file_id: Id of the attached file (the id attribute in the attached_files tag).
             Leave it out when exactly one file is attached; the tool then uses that file.
         :param source_language: Source language code, or "auto" to detect it.
+        :param terminal_output: Also save a copy in the user's Open Terminal workspace (~/workspace/output).
+            Leave it out: the copy is saved whenever an Open Terminal is selected in this chat.
+            Use false for a download only.
+        :param save_to: Where in the user's home to save the copy: a folder ("projects/report" under ~/workspace, or "~/folder") or a full file path. Default ~/workspace/output. Nothing is overwritten.
         """
         try:
             cfg = self._config()
             user = __user__ or {}
+            terminal = await self._terminal(terminal_output, __request__, user, __metadata__, save_to)
             await self._status(__event_emitter__, 'Reading the attachment')
             name, data = await self._read_attachment(file_id, user, __files__ or [])
             target = self._language(target_language)
@@ -121,14 +132,18 @@ class Tools:
                     raise ToolError('The translator did not return a job id.')
                 fetched = await self._wait_and_fetch(session, cfg, job_id, __event_emitter__)
 
-            return await self._deliver(cfg, fetched, name, target, __request__, __event_emitter__)
+            return await self._deliver(cfg, fetched, name, target, __request__, __event_emitter__, terminal)
         except ToolError as e:
             return await self._fail(__event_emitter__, str(e))
 
     async def deliver_translation(
         self,
         job_id: str,
+        terminal_output: Optional[bool] = None,
+        save_to: Optional[str] = None,
+        __user__: Optional[dict] = None,
         __request__: Any = None,
+        __metadata__: Optional[dict] = None,
         __event_emitter__: Optional[Callable[[dict], Awaitable[None]]] = None,
     ) -> dict:
         """
@@ -136,16 +151,47 @@ class Tools:
         translate_attachment returned its job id) and give the user the translated file as a download.
 
         :param job_id: The translation job id.
+        :param terminal_output: Also save a copy in the user's Open Terminal workspace; see translate_attachment.
+        :param save_to: Where in the user's home to save the copy; see translate_attachment.
         """
         try:
             cfg = self._config()
+            terminal = await self._terminal(terminal_output, __request__, __user__ or {}, __metadata__, save_to)
             async with self._gateway(cfg) as session:
                 fetched = await self._wait_and_fetch(session, cfg, (job_id or '').strip(), __event_emitter__)
-            return await self._deliver(cfg, fetched, None, None, __request__, __event_emitter__)
+            return await self._deliver(cfg, fetched, None, None, __request__, __event_emitter__, terminal)
         except ToolError as e:
             return await self._fail(__event_emitter__, str(e))
 
     # ---------------------------------------------------------------- helpers
+
+    async def _terminal(self, terminal_output, request, user: dict, metadata, save_to=None) -> dict:
+        """Resolve the caller's Open Terminal before any work is done.
+
+        A copy is made when the chat has a terminal selected, when terminal_output is true, or when
+        save_to names a destination. An explicit request that cannot be met fails before the translator
+        runs; an implicit one falls back to a download only and reports why.
+        """
+        terminal_id = (metadata or {}).get('terminal_id')
+        if save_to is not None:
+            if not isinstance(save_to, str):
+                raise ToolError('save_to must be a folder or file path.')
+            try:
+                _destination(save_to, 'translation', None)
+            except ValueError as e:
+                raise ToolError(f'save_to is not usable ({e}).') from None
+        explicit = terminal_output is True or bool(save_to)
+        requested = terminal_output if terminal_output is not None else (bool(terminal_id) or bool(save_to))
+        state = {'requested': requested, 'id': terminal_id, 'context': None, 'warning': None, 'save_to': save_to}
+        if not requested:
+            return state
+        try:
+            state['context'] = await _terminal_context(request, user, metadata)
+        except Exception as e:
+            if explicit:
+                raise ToolError(f'a terminal copy was requested but Open Terminal is unavailable ({e}).') from None
+            state['warning'] = f'Open Terminal is unavailable ({e}); the authenticated download remains available. No terminal output was confirmed.'
+        return state
 
     def _config(self) -> dict:
         url = (self.valves.GATEWAY_URL or '').strip()
@@ -350,7 +396,7 @@ class Tools:
         res = await self._call(session, 'get_translation_result', {'job_id': job_id, 'include_content': True})
         return {'job_id': job_id, **res}
 
-    async def _deliver(self, cfg, fetched: dict, name, target, request, emitter) -> dict:
+    async def _deliver(self, cfg, fetched: dict, name, target, request, emitter, terminal: Optional[dict] = None) -> dict:
         if 'running' in fetched:
             job = fetched['running']
             await self._status(emitter, 'Translation still running', done=True)
@@ -384,16 +430,35 @@ class Tools:
                     'data': {'files': [{'type': 'file', 'id': file_id, 'name': out_name, 'url': url}]},
                 }
             )
-        await self._status(emitter, 'Translation finished', done=True)
+        terminal = terminal or {'requested': False, 'context': None, 'warning': None, 'id': None}
+        workspace_path, warning = None, terminal.get('warning')
+        if terminal['context'] is not None:
+            await self._status(emitter, 'Saving to Open Terminal')
+            try:
+                extension = '.' + out_name.rsplit('.', 1)[-1] if '.' in out_name else None
+                workspace_path = await _terminal_save(terminal['context'], out, out_name, save_to=terminal.get('save_to'),
+                                                      extension=extension, content_type=f.get('content_type'))
+            except Exception:
+                warning = 'Open Terminal upload failed; the authenticated download remains available. No terminal output was confirmed.'
+        await self._status(emitter, 'Translation finished' if not warning else 'Download ready; terminal save failed.', done=True)
         link = f'{url}?attachment=true'
+        terminal_url = _terminal_download_url(terminal.get('id'), workspace_path)
+        message = 'The translation is ready and attached. ' + _delivery_message(out_name, link, terminal_url)
+        if warning:
+            message += f' Warning: {warning}'
         return {
-            'status': 'succeeded',
+            'status': 'partial_success' if warning else 'succeeded',
+            'file_id': file_id,
             'file_name': out_name,
             'download_url': link,
-            'message': (
-                f'The translation is ready and attached to this message as "{out_name}". '
-                f'Give the user this download link exactly as written: [{out_name}]({link})'
-            ),
+            'workspace_path': workspace_path,
+            'terminal_download_url': terminal_url,
+            'terminal_requested': bool(terminal.get('requested')),
+            'terminal_saved': workspace_path is not None,
+            'size': len(out),
+            'warnings': [warning] if warning else [],
+            'message': message,
+            'instructions': _DELIVERY_INSTRUCTIONS,
         }
 
     @staticmethod

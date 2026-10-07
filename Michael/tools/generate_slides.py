@@ -1147,7 +1147,7 @@ async def _ai_image(prompt: str, request, user_dict) -> Optional[bytes]:
     return None
 
 
-from office_delivery import _terminal_context, _terminal_image, _terminal_save, _office_result, _pptx_visual_theme
+from workspace_delivery import _terminal_context, _terminal_image, _terminal_save, _office_result, _pptx_visual_theme, _destination
 
 
 async def _attachment_image(file_id, user_dict):
@@ -1998,6 +1998,78 @@ def _placeholder_text(shape, value):
         # Do not assign a font or colour: inherit the actual Lenovo layout.
 
 
+def _column_text(shape, column):
+    """Keep a section heading distinct while inheriting the template typography."""
+    heading = column.get('heading')
+    rows = [heading] if heading else []
+    rows += _as_list(column.get('bullets', column.get('points', column.get('body', column.get('description', '')))))
+    _placeholder_text(shape, rows)
+    if heading:
+        from pptx.oxml.xmlchemy import OxmlElement
+        paragraph = shape.text_frame.paragraphs[0]
+        properties = paragraph._p.get_or_add_pPr()
+        # Override inherited bullet markers and hanging indentation only for the heading.
+        for tag in ('buNone', 'buChar', 'buAutoNum', 'buBlip'):
+            for element in list(properties.findall(qn('a:' + tag))):
+                properties.remove(element)
+        properties.insert_element_before(OxmlElement('a:buNone'), 'a:tabLst', 'a:defRPr', 'a:extLst')
+        properties.set('marL', '0')
+        properties.set('indent', '0')
+        paragraph.font.bold = True
+
+
+_TABLE_SEPARATOR = re.compile(r'^:?-{2,}:?$')
+
+
+def _text_table(value):
+    """(headers, rows) when `value` is a pipe-delimited table written as text, else None.
+
+    Models sometimes write a table as lines like "Item | Jul | Aug" in a text placeholder, which renders as
+    bullets with pipe characters. Every line must be a row with the same number of cells (at least two), and
+    there must be a header plus at least one row; a Markdown separator row (|---|---|) is dropped.
+    """
+    if isinstance(value, str):
+        lines = [line for line in value.splitlines() if line.strip()]
+    elif isinstance(value, list) and value and all(isinstance(x, str) for x in value):
+        lines = [line for line in value if line.strip()]
+    else:
+        return None
+    if len(lines) < 2 or any('|' not in line for line in lines):
+        return None
+
+    def cells(line):
+        text = line.strip()
+        text = text[1:] if text.startswith('|') else text
+        text = text[:-1] if text.endswith('|') else text
+        return [cell.strip() for cell in text.split('|')]
+
+    parsed = [cells(line) for line in lines]
+    width = len(parsed[0])
+    if width < 2 or any(len(row) != width for row in parsed):
+        return None
+    rows = [row for row in parsed if not all(_TABLE_SEPARATOR.match(cell) for cell in row)]
+    if len(rows) < 2:
+        return None
+    return rows[0], rows[1:]
+
+
+def _promote_text_tables(slides, report):
+    """Turn a table written as pipe-separated text into a real table, in place."""
+    for number, slide in enumerate(slides, 1):
+        if not isinstance(slide, dict) or slide.get('headers') is not None:
+            continue
+        for key in ('body', 'bullets', 'points', 'text'):
+            table = _text_table(slide.get(key))
+            if table is None:
+                continue
+            slide['headers'], slide['rows'] = table
+            slide.pop(key, None)
+            if not slide.get('template_layout') and slide.get('layout') in (None, '', 'title_body', 'title_bullets', 'content', 'blank'):
+                slide['layout'] = 'table'
+            report.append(f'Slide {number}: converted pipe-separated text into a real table')
+            break
+
+
 def _starter_layout(prs, data):
     name = str(data.get('template_layout') or data.get('layout') or 'title_bullets')
     name = _TEMPLATE_ALIASES.get(name, name)
@@ -2010,6 +2082,40 @@ def _starter_layout(prs, data):
     if len(matches) != 1:
         raise ValueError(f'Unknown or ambiguous template layout {name!r}; call get_slide_layouts for exact names')
     return matches[0]
+
+
+def _delete_point_label(series, index):
+    """Remove one data point's label (OOXML <c:dLbl><c:idx/><c:delete val="1"/>), which every renderer honours."""
+    from lxml import etree
+    from pptx.oxml.ns import qn
+    element = series.points[index].data_label._get_or_add_dLbl()
+    for child in list(element):
+        if child.tag != qn('c:idx'):
+            element.remove(child)
+    delete = etree.SubElement(element, qn('c:delete'))
+    delete.set('val', '1')
+
+
+def _place_picture_in_box(slide, ph, raw):
+    """Put an image inside a placeholder's rectangle, whole and centred, and remove the empty placeholder.
+    Used for a chart exported as an image on a chart layout: it must never be cropped."""
+    from PIL import Image
+    with Image.open(BytesIO(raw)) as image:
+        width, height = image.size
+    scale = min(ph.width / width, ph.height / height)
+    new_w, new_h = int(width * scale), int(height * scale)
+    picture = slide.shapes.add_picture(BytesIO(raw), ph.left + (ph.width - new_w) // 2, ph.top + (ph.height - new_h) // 2, new_w, new_h)
+    ph._element.getparent().remove(ph._element)
+    return picture
+
+
+def _contain_picture(picture, left, top, width, height):
+    """Undo a picture placeholder's fill-and-crop so the whole image shows inside the same box."""
+    picture.crop_left = picture.crop_right = picture.crop_top = picture.crop_bottom = 0
+    ratio = picture.image.size[0] / picture.image.size[1]
+    new_w, new_h = (width, int(width / ratio)) if width / height < ratio else (int(height * ratio), height)
+    picture.left, picture.top = left + (width - new_w) // 2, top + (height - new_h) // 2
+    picture.width, picture.height = new_w, new_h
 
 
 def _starter_chart(ph, data, dark=False, report=None):
@@ -2040,6 +2146,12 @@ def _starter_chart(ph, data, dark=False, report=None):
         ctype = 'BAR_CLUSTERED'
         circular = False
         if report is not None: report.append('Converted a pie with more than six categories to a labelled horizontal bar chart')
+    # Many series read far better stacked (composition plus totals) than as a dozen thin bars side by side.
+    stacked = chart_spec.get('stacked')
+    if ctype in ('COLUMN_CLUSTERED', 'BAR_CLUSTERED') and len(series) >= 2 and (stacked is True or (stacked is None and len(series) >= 6)):
+        ctype = 'COLUMN_STACKED' if ctype == 'COLUMN_CLUSTERED' else 'BAR_STACKED'
+        if report is not None and stacked is None:
+            report.append(f'Stacked a chart with {len(series)} series for legibility (set stacked:false to keep them side by side)')
     chart_data = CategoryChartData()
     chart_data.categories = labels
     for name, values in series:
@@ -2055,17 +2167,27 @@ def _starter_chart(ph, data, dark=False, report=None):
     chart.font.color.rgb = RGBColor.from_string(ink)
     chart.has_legend = circular or len(series) > 1
     if chart.has_legend:
-        chart.legend.position = XL_LEGEND_POSITION.BOTTOM
+        many = len(series) >= 6
+        chart.legend.position = XL_LEGEND_POSITION.RIGHT if many else XL_LEGEND_POSITION.BOTTOM
+        chart.legend.include_in_layout = False
+        chart.legend.font.size = Pt(12 if many else 14)
     # Choose readable template scheme colours without making every datum red.
     palette = ([MSO_THEME_COLOR.ACCENT_5, MSO_THEME_COLOR.ACCENT_3] if dark else
                [MSO_THEME_COLOR.ACCENT_6, MSO_THEME_COLOR.ACCENT_4])
     chart.plots[0].vary_by_categories = circular
+    # Three or more series need distinguishable colours; two theme colours alternating make them unreadable.
+    distinct = ['E1251B', '1F4E79', '2E8B57', 'C17A00', '6D73C9', 'BD5E91', '008C95', '5B5B5B', '8E6C8A', 'D4A017', '3046AD', '7A3E00']
+    multi = not circular and len(series) >= 3
     for i, rendered in enumerate(chart.series):
         targets = list(rendered.points) if circular else [rendered]
         for j, target in enumerate(targets):
             target.format.fill.solid()
-            target.format.fill.fore_color.theme_color = palette[(i + j) % len(palette)]
-            target.format.line.color.theme_color = palette[(i + j) % len(palette)]
+            if multi:
+                target.format.fill.fore_color.rgb = RGBColor.from_string(distinct[i % len(distinct)])
+                target.format.line.color.rgb = RGBColor.from_string(distinct[i % len(distinct)])
+            else:
+                target.format.fill.fore_color.theme_color = palette[(i + j) % len(palette)]
+                target.format.line.color.theme_color = palette[(i + j) % len(palette)]
             if circular:
                 colors = ['3046AD', '4D144A', '008C95', 'C17A00', '6D73C9', 'BD5E91']
                 target.format.fill.fore_color.rgb = RGBColor.from_string(colors[j % len(colors)])
@@ -2075,13 +2197,26 @@ def _starter_chart(ph, data, dark=False, report=None):
     plot.has_data_labels = True
     dl = plot.data_labels
     dl.font.name = '+mn-lt'
-    dl.font.size = Pt(14)
+    dl.font.size = Pt(12 if len(series) >= 3 else 14)
     dl.font.color.rgb = RGBColor.from_string(ink)
     dl.show_value = not circular
+    if not circular:
+        dl.number_format = '0;-0;;'  # a blank, not a printed 0, for empty groups
+        dl.number_format_is_linked = False
+        if 'COLUMN' in ctype or 'BAR' in ctype:
+            plot.gap_width = 60
     if circular:
         dl.show_category_name = True
         dl.show_percentage = True
         dl.position = XL_DATA_LABEL_POSITION.OUTSIDE_END
+    elif 'STACKED' in ctype:
+        dl.position = XL_DATA_LABEL_POSITION.CENTER  # outside-end is not valid on a stacked chart
+        # Label only segments tall enough to hold text; thin ones would pile their numbers on each other.
+        peak = max(sum(values[k] for _, values in series) for k in range(len(labels))) or 1
+        for si, (_, values) in enumerate(series):
+            for k, value in enumerate(values):
+                if not value or abs(value) / peak < 0.06:
+                    _delete_point_label(chart.series[si], k)
     elif 'BAR' in ctype or 'COLUMN' in ctype:
         dl.position = XL_DATA_LABEL_POSITION.OUTSIDE_END
     if not circular:
@@ -2161,33 +2296,48 @@ def _table_pages(data, ph):
         raise ValueError('Table exceeds the document size limit; split the input into separate decks')
     groups = [list(range(len(headers)))] if len(headers)<=6 else [[0]+list(range(i,min(i+5,len(headers)))) for i in range(1,len(headers),5)]
     pages = []
-    font_pt = 18
     # Reserve bottom room for line-height differences across PowerPoint renderers.
     available = ph.height / 12700 - 12
-    for indices in groups:
-        hs = [str(headers[i]) for i in indices]; rs = [[str(r[i]) for i in indices] for r in rows]
-        weights = [max(4, min(10, math.sqrt(max(len(hs[i]), sum(len(r[i]) for r in rs)/max(1,len(rs)))))) for i in range(len(hs))]
-        width = ph.width / 12700
+    width = ph.width / 12700
+
+    def plan(hs, rs, font_pt, weights):
+        """Pages for one column group at one font size."""
         widths = [width*w/sum(weights) for w in weights]
         wrapped_header = [_wrap_table_text(v,w,font_pt) for v,w in zip(hs,widths)]
-        header_height = max(.55*72, max(map(len,wrapped_header))*font_pt*1.25+16)
-        capacity = int((available-header_height-16)/(font_pt*1.25))
+        header_height = max(.45*72, max(map(len,wrapped_header))*font_pt*1.25+12)
+        capacity = int((available-header_height-12)/(font_pt*1.25))
         if capacity < 1: raise ValueError('Table headers are too tall; use shorter column headings')
-        page_rows=[];heights=[];used=header_height
+        planned=[];page_rows=[];heights=[];used=header_height
         def emit():
-            pages.append({**data,'headers':['\n'.join(v) for v in wrapped_header],'rows':list(page_rows),
-                          '_table_widths':widths,'_table_heights':[header_height]+list(heights),'_table_font':font_pt})
+            planned.append({**data,'headers':['\n'.join(v) for v in wrapped_header],'rows':list(page_rows),
+                            '_table_widths':widths,'_table_heights':[header_height]+list(heights),'_table_font':font_pt})
         for row in rs:
             wrapped=[_wrap_table_text(v,w,font_pt) for v,w in zip(row,widths)]
             count=max(map(len,wrapped))
             for start in range(0,count,capacity):
                 fragment=['\n'.join(v[start:start+capacity]) for v in wrapped]
                 line_count=min(capacity,count-start)
-                height=max(.5*72,line_count*font_pt*1.25+16)
+                height=line_count*font_pt*1.25+12
                 if page_rows and used+height>available:
                     emit();page_rows=[];heights=[];used=header_height
                 page_rows.append(fragment);heights.append(height);used+=height
-        if page_rows or not rows:emit()
+        if page_rows or not rs:emit()
+        return planned
+
+    for indices in groups:
+        hs = [str(headers[i]) for i in indices]; rs = [[str(r[i]) for i in indices] for r in rows]
+        # Short columns (numbers, codes) stay narrow; text columns take the room they need.
+        weights = []
+        for i in range(len(hs)):
+            longest = max([len(hs[i])] + [len(r[i]) for r in rs])
+            average = sum(len(r[i]) for r in rs)/max(1,len(rs))
+            weights.append(1.0 if longest <= 8 else max(2.0, min(8.0, average/5)))
+        # Prefer the largest type that keeps the table on one slide; only then continue onto more slides.
+        for font_pt in (18, 16, 14, 12):
+            planned = plan(hs, rs, font_pt, weights)
+            if len(planned) == 1:
+                break
+        pages.extend(planned)
     return pages
 
 
@@ -2293,7 +2443,7 @@ def _build_starter(encoded, spec):
     raw_slides = spec.get('slides')
     if not isinstance(raw_slides, list) or not 1 <= len(raw_slides) <= 100 or any(not isinstance(s, dict) for s in raw_slides):
         raise ValueError('Template decks require 1–100 slide objects in slides[]')
-    report = spec['_layout_warnings'] = []
+    report = spec['_layout_warnings'] = list(spec.get('_layout_warnings') or [])
     raw_slides = _prepare_starter_slides(prs, raw_slides, report)
     # Validate layout choices before creating anything. Starter slides are usage
     # instructions, not content to copy into the user's generated presentation.
@@ -2361,9 +2511,7 @@ def _build_starter(encoded, spec):
                 raise ValueError(f'{layout.name} requires {len(bodies)} columns')
             for ph, col in zip(bodies, columns):
                 if isinstance(col, dict):
-                    rows = [col['heading']] if col.get('heading') else []
-                    rows += _as_list(col.get('bullets', col.get('points', col.get('body', col.get('description', '')))))
-                    _placeholder_text(ph, rows)
+                    _column_text(ph, col)
                 else:
                     _placeholder_text(ph, col)
         elif bodies:
@@ -2382,10 +2530,17 @@ def _build_starter(encoded, spec):
         chart_ph = next((ph for ph in placeholders if _placeholder_kind(ph) == 'chart'), None)
         pictures = [ph for ph in placeholders if _placeholder_kind(ph) == 'picture']
         if pictures and data.get('_img'):
-            pictures[0].insert_picture(BytesIO(data['_img']))
+            box = (pictures[0].left, pictures[0].top, pictures[0].width, pictures[0].height)
+            inserted = pictures[0].insert_picture(BytesIO(data['_img']))
+            if data.get('image_fit') == 'contain':
+                _contain_picture(inserted, *box)
+        elif chart_ph is not None and data.get('_img') and not any(k in data for k in ('chart', 'values', 'datasets', 'data')):
+            # An exported chart on a chart layout: shown whole in the chart's wide area, never cropped.
+            _place_picture_in_box(slide, chart_ph, data['_img'])
+            chart_ph = None
         elif any(data.get(k) for k in ('image', 'image_url', 'base64', 'image_file_id', 'terminal_image_path')):
             if not pictures:
-                raise ValueError(f'{layout.name} has no picture placeholder; choose an image layout')
+                raise ValueError(f'{layout.name} has no picture placeholder; choose an image layout or a chart layout')
             raise ValueError('Requested image could not be loaded; no file was generated')
         if chart_ph is not None and any(k in data for k in ('chart', 'values', 'datasets', 'data')):
             insight = '\n'.join(str(data[k]) for k in ('insight_title', 'insight') if data.get(k))
@@ -2417,7 +2572,9 @@ def _build_starter(encoded, spec):
     prs.save(buf)
     # Do not ship the starter's stale thumbnail (it depicts the instruction deck).
     import zipfile
-    from xml.etree import ElementTree as ET
+    # lxml keeps the default namespace. ElementTree rewrote [Content_Types].xml and _rels/.rels with an
+    # ns0: prefix, which is valid XML but makes strict package readers (LibreOffice and others) refuse the file.
+    from lxml import etree as ET
     cleaned = BytesIO()
     with zipfile.ZipFile(buf) as source, zipfile.ZipFile(cleaned, 'w', zipfile.ZIP_DEFLATED) as target:
         for info in source.infolist():
@@ -2429,13 +2586,13 @@ def _build_starter(encoded, spec):
                 for rel in list(root):
                     if rel.get('Type', '').endswith('/metadata/thumbnail'):
                         root.remove(rel)
-                content = ET.tostring(root, encoding='utf-8', xml_declaration=True)
+                content = ET.tostring(root, encoding='UTF-8', xml_declaration=True, standalone=True)
             elif info.filename == '[Content_Types].xml':
                 root = ET.fromstring(content)
                 for entry in list(root):
                     if entry.get('PartName', '').startswith('/docProps/thumbnail.'):
                         root.remove(entry)
-                content = ET.tostring(root, encoding='utf-8', xml_declaration=True)
+                content = ET.tostring(root, encoding='UTF-8', xml_declaration=True, standalone=True)
             target.writestr(info, content)
     return cleaned.getvalue(), len(raw_slides)
 
@@ -2662,9 +2819,10 @@ class Tools:
             result = {"mode": "template", "layouts": _starter_catalog(prs),
                       "aliases": _TEMPLATE_ALIASES,
                       "size_inches": [prs.slide_width / EMU_IN, prs.slide_height / EMU_IN]}
-            picture_layouts = [l.name for l in prs.slide_layouts if any(
-                str(p.placeholder_format.type).startswith('PICTURE') for p in l.placeholders)]
-            selected = 'Title w/Image' if 'Title w/Image' in picture_layouts else next(iter(picture_layouts), None)
+            sizing = [l.name for l in prs.slide_layouts if any(
+                str(p.placeholder_format.type).startswith(('PICTURE', 'CHART')) for p in l.placeholders)]
+            # Charts exported as images are sized for the wide Chart Slide, not a portrait photo layout.
+            selected = next((n for n in ('Chart Slide', 'Title w/Image') if n in sizing), next(iter(sizing), None))
             try:
                 result['visual_theme'] = _pptx_visual_theme(self.valves.starter_template_b64, selected)
             except Exception as exc:
@@ -2678,6 +2836,7 @@ class Tools:
     async def generate_slides(
         self,
         content: str = "{}",
+        save_to: Optional[str] = None,
         __event_emitter__: Any = None,
         __user__: Optional[dict] = None,
         __messages__: Any = None,
@@ -2694,10 +2853,23 @@ class Tools:
         file tools first; do not guess paths or image content. No model vision is
         needed to insert a file. Only raster images are embedded, not arbitrary
         PDF/Office files. Do not combine terminal_image_path with another image source.
-        When a terminal is selected, generated decks are also saved to a unique
-        ~/workspace/output/*.pptx by default. Set top-level terminal_output:false
+        When a terminal is selected, generated decks are also saved to
+        ~/workspace/output by default; top-level save_to puts the deck elsewhere in
+        the user's home: a folder ("projects/report", relative to ~/workspace, or
+        "~/folder") or a full path ending in .pptx. Nothing is overwritten. Set top-level terminal_output:false
         for download only, or true to require a selected terminal. The result is a JSON string with exact download_url, workspace_path,
-        terminal_saved and status; preserve the URL and report partial failures.
+        terminal_saved, terminal_download_url and status. Show one download URL per artifact: prefer download_url, otherwise use terminal_download_url only for a verified Terminal copy. Never show both URLs for the same artifact. Keep workspace_path for internal reuse and show it only for an explicit Terminal save/open/edit/reuse request. Preserve exact leading slashes and report partial failures.
+
+        Charts and tables: a native chart (layout "chart", or template_layout
+        "Chart Slide" with chart_type, labels[] and datasets[]) suits up to five
+        series; more series are stacked automatically. For a dense or styled chart
+        call render_visualization first (it is sized for the Chart Slide), then use
+        template_layout "Chart Slide" with terminal_image_path set to the returned
+        workspace_path: the image is shown whole in the chart area. A table must use
+        headers[] and rows[] (any layout with a content placeholder); never write a
+        table as text with | separators, which renders as bullets with pipe characters.
+        A picture layout fills its frame and crops; add image_fit:"contain" to keep a
+        whole image visible.
 
         First call get_slide_layouts to discover the installed starter. When present,
         its actual masters, artwork, fonts, colours and layouts are retained. Use
@@ -2791,6 +2963,9 @@ class Tools:
 
         Returns a [TOOL_RESULT ...] line with the markdown link to show the user
         so they can download the .pptx.
+
+        :param content: The presentation specification as a JSON string.
+        :param save_to: Where in the user's home to save the deck instead of ~/workspace/output: a folder ("projects/report" under ~/workspace, or "~/Documents/board-pack") or a full path ending in .pptx. Use this instead of copying the file afterwards with the shell. Needs a selected Open Terminal.
         """
         if not _HAS_PPTX:
             return self._error("python-pptx is not installed in the runtime.")
@@ -2817,9 +2992,15 @@ class Tools:
         try:
             _pf = [s for s in _as_list(_first(spec, "slides", "sections", "pages",
                                               "deck", default=[])) if isinstance(s, dict)]
-            terminal_output = spec.get('terminal_output', bool((__metadata__ or {}).get('terminal_id')))
+            _promote_text_tables(_pf, spec.setdefault('_layout_warnings', []))
+            save_to = save_to if save_to is not None else spec.get('save_to')
+            terminal_output = spec.get('terminal_output', bool((__metadata__ or {}).get('terminal_id')) or bool(save_to))
             if not isinstance(terminal_output, bool):
                 raise ValueError('terminal_output must be true or false')
+            if save_to is not None:
+                if not isinstance(save_to, str):
+                    raise ValueError('save_to must be a folder or file path')
+                _destination(save_to, 'presentation.pptx', '.pptx')  # reject a bad path before any rendering
             terminal_context = None
             if terminal_output or any(s.get('terminal_image_path') for s in _pf):
                 terminal_context = await _terminal_context(__request__, __user__, __metadata__)
@@ -2860,12 +3041,13 @@ class Tools:
         if terminal_output:
             await self._emit(__event_emitter__, "Saving to Open Terminal...", done=False)
             try:
-                path = await _terminal_save(terminal_context, data, fname)
+                path = await _terminal_save(terminal_context, data, fname, save_to=save_to, extension='.pptx')
             except Exception:
                 warning = 'Open Terminal upload failed; the authenticated download remains available. No terminal output was confirmed.'
         await self._emit(__event_emitter__, "Presentation ready." if not warning else "Download ready; terminal save failed.", done=True)
         result = json.loads(_office_result(fname, url, file_id, workspace_path=path,
-                                          terminal_requested=terminal_output, warning=warning))
+                                          terminal_requested=terminal_output, warning=warning,
+                                          terminal_id=(__metadata__ or {}).get('terminal_id'), size=len(data)))
         result['layout_adjustments'] = spec.get('_layout_warnings', [])
         return json.dumps(result, ensure_ascii=False)
 

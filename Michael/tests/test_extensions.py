@@ -52,7 +52,7 @@ class ExtensionsTests(unittest.TestCase):
 
     def test_manifest_sources_compile_and_retired_do_not_overlap(self):
         doc = extensions.load_manifest()
-        self.assertEqual({x['id'] for x in doc['managed']}, {'visuals_toolkit_v4', 'delegate_agents', 'interface_toggles', 'collapsed_sidebar_pinned_models'})
+        self.assertEqual({x['id'] for x in doc['managed']}, {'visuals_toolkit_v4', 'delegate_agents', 'workspace_files', 'interface_toggles', 'collapsed_sidebar_pinned_models'})
 
 
 if __name__ == '__main__':unittest.main()

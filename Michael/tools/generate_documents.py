@@ -68,7 +68,7 @@ license: MIT
 
 from __future__ import annotations
 
-from office_delivery import _terminal_context, _terminal_image, _terminal_save, _office_result
+from workspace_delivery import _terminal_context, _terminal_image, _terminal_save, _office_result, _destination
 
 import base64
 import inspect
@@ -1683,6 +1683,8 @@ _FRONTMATTER_KEYS = {
     "accent", "accent_color", "accent_hex",
     # Company letterhead / sample .docx attached in chat (filename only).
     "letterhead", "sample", "base_docx",
+    # Delivery options read by generate_document itself (see workspace_delivery).
+    "terminal_output", "save_to",
 }
 
 
@@ -4564,6 +4566,7 @@ class Tools:
     async def generate_document(
         self,
         content: str,
+        save_to: Optional[str] = None,
         __event_emitter__=None,
         __request__=None,
         __user__=None,
@@ -4616,10 +4619,15 @@ class Tools:
 
         Returns:
             A JSON string containing status, file_id, file_name, exact download_url,
-            workspace_path and terminal_saved. Preserve the download URL and report
-            partial failures. With a selected terminal, output defaults to
+            workspace_path, terminal_download_url and terminal_saved. Show one download URL per artifact: prefer download_url, otherwise use terminal_download_url only for a verified Terminal copy. Never show both URLs for the same artifact. Keep workspace_path for internal reuse and show it only for an explicit Terminal save/open/edit/reuse request. Preserve exact leading slashes and report partial failures. With a selected terminal, output defaults to
             ~/workspace/output; terminal_output: false disables that copy.
-            Set terminal_output in JSON or YAML frontmatter.
+            save_to puts it elsewhere in the user's home: a folder ("projects/report",
+            relative to ~/workspace, or "~/folder") or a full path ending in .docx.
+            An existing file is never overwritten; a short suffix is added to the name.
+            Set terminal_output and save_to in JSON or YAML frontmatter.
+
+        :param content: Either Markdown-with-frontmatter or a JSON string describing the document.
+        :param save_to: Where in the user's home to save the file instead of ~/workspace/output: a folder ("projects/report" under ~/workspace, or "~/Documents/board-pack") or a full path ending in .docx. Use this instead of copying the file afterwards with the shell. Needs a selected Open Terminal.
         """
         try:
             spec_raw = self._parse_content(content)
@@ -4634,11 +4642,16 @@ class Tools:
                 "with YAML frontmatter."
             )
 
-        terminal_output = spec_raw.get('terminal_output', bool((__metadata__ or {}).get('terminal_id')))
+        save_to = save_to if save_to is not None else spec_raw.get('save_to')
+        terminal_output = spec_raw.get('terminal_output', bool((__metadata__ or {}).get('terminal_id')) or bool(save_to))
         terminal_context = None
         try:
             if not isinstance(terminal_output, bool):
                 raise ValueError('terminal_output must be true or false')
+            if save_to is not None:
+                if not isinstance(save_to, str):
+                    raise ValueError('save_to must be a folder or file path')
+                _destination(save_to, 'document.docx', '.docx')  # reject a bad path before any rendering
             if terminal_output:
                 terminal_context = await _terminal_context(__request__, __user__, __metadata__)
         except Exception as exc:
@@ -4699,12 +4712,13 @@ class Tools:
         if terminal_output:
             await self._emit_status(__event_emitter__, "Saving to Open Terminal...", done=False)
             try:
-                path = await _terminal_save(terminal_context, docx_bytes, fname)
+                path = await _terminal_save(terminal_context, docx_bytes, fname, save_to=save_to, extension='.docx')
             except Exception:
                 warning = 'Open Terminal upload failed; the authenticated download remains available. No terminal output was confirmed.'
         await self._emit_status(__event_emitter__, "Document ready." if not warning else "Download ready; terminal save failed.", done=True)
         return _office_result(fname, download_url, file_id, workspace_path=path,
-                              terminal_requested=terminal_output, warning=warning)
+                              terminal_requested=terminal_output, warning=warning,
+                              terminal_id=(__metadata__ or {}).get('terminal_id'), size=len(docx_bytes))
 
     # ── Build pipeline ───────────────────────────────────────────────────────
     async def _build_document(

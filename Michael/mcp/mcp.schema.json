@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "mcp.schema.json",
   "title": "Michael external tool server inventory",
-  "description": "Schema of Michael/mcp/mcp.json, read by bootstrap/mcp_servers.py. See docs/ExternalToolServers.md.",
+  "description": "Schema of Michael/mcp/mcp.json, read by bootstrap/mcp_servers.py. See docs/mcp.md.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "servers"],

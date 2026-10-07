@@ -102,6 +102,7 @@ from open_webui.utils.filter import (
     process_filter_functions,
 )
 from open_webui.utils.json_codec import JSONCodec
+from open_webui.utils.mcp.arguments import prepare_tool_arguments
 from open_webui.utils.mcp.client import MCPClient
 from open_webui.utils.memory import add_memory_context, review_memory_after_turn
 from open_webui.utils.misc import (
@@ -1442,8 +1443,7 @@ async def chat_completion_tools_handler(
                     direct_tool = tool.get('direct', False)
 
                     spec = tool.get('spec', {})
-                    allowed_params = spec.get('parameters', {}).get('properties', {}).keys()
-                    tool_function_params = {k: v for k, v in tool_function_params.items() if k in allowed_params}
+                    tool_function_params = prepare_tool_arguments(spec, tool_function_params, tool_type)
 
                     if tool.get('direct', False):
                         tool_result = await event_caller(
@@ -3353,10 +3353,8 @@ async def execute_tool_call_for_output(request, form_data, user, metadata, event
     spec = tool.get('spec', {})
     tool_type = tool.get('type', '')
     direct_tool = tool.get('direct', False)
-    allowed_params = spec.get('parameters', {}).get('properties', {}).keys()
-    params = {key: value for key, value in params.items() if key in allowed_params}
-
     try:
+        params = prepare_tool_arguments(spec, params, tool_type)
         if direct_tool:
             if not event_caller:
                 result = 'Error: Browser session is not connected for this direct tool.'
@@ -5998,9 +5996,8 @@ async def streaming_chat_response_handler(response, ctx):
                         spec = tool.get('spec', {})
                         tool_type = tool.get('type', '')
                         direct_tool = tool.get('direct', False)
-                        allowed_params = spec.get('parameters', {}).get('properties', {}).keys()
-                        params = {key: value for key, value in params.items() if key in allowed_params}
                         try:
+                            params = prepare_tool_arguments(spec, params, tool_type)
                             if direct_tool:
                                 result = await event_caller(
                                     {

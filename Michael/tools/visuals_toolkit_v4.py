@@ -84,13 +84,16 @@ tool_instructions: |
 
 from __future__ import annotations
 
-from office_delivery import _terminal_context, _terminal_image, _terminal_save, _office_result, _pptx_visual_theme, _terminal_plotly
+from workspace_delivery import _terminal_context, _terminal_image, _terminal_save, _office_result, _pptx_visual_theme, _terminal_plotly, _terminal_screenshot, _terminal_download_url, _DELIVERY_INSTRUCTIONS
 from visual_figure import _visual_figure, _script_json
 
+import functools
 import html
+import inspect
+import re
 import json
 import math
-from typing import Any, Dict, List, Literal, Set, Union
+from typing import Any, Dict, List, Literal, Optional, Set, Union
 
 from pydantic import BaseModel, Field
 
@@ -101,6 +104,46 @@ except Exception:  # pragma: no cover
 
 ChartType = Literal["bar", "line", "scatter"]
 OutputMode = Literal["embed", "text", "auto"]
+
+
+_VISUAL_NAME = re.compile(r'^visual-[0-9a-f]{32}\.html$')
+_VISUAL_LIMIT = 8 * 1024 * 1024
+
+# What the light export theme turns each dark colour of the cards into, in one pass so nothing is replaced twice.
+_LIGHT_THEME = {
+    '#0b0f14': '#ffffff', '#111827': '#f3f4f6', '#e5e7eb': '#111827', '#94a3b8': '#4b5563',
+    '#374151': '#d1d5db', '#1f2937': '#e5e7eb', '#14532d': '#dcfce7', '#dcfce7': '#14532d',
+}
+
+
+def _light_page(page: str) -> str:
+    """The same page with the card palette swapped for white, so an image sits on a light slide."""
+    return re.sub('|'.join(_LIGHT_THEME), lambda m: _LIGHT_THEME[m.group(0).lower()], page, flags=re.IGNORECASE)
+
+
+def _storable(method):
+    """Make a render_* tool save the page it shows and tell the model how to turn it into an image.
+
+    The page is kept in the caller's Files store under an opaque id, which is all export_visual accepts,
+    so nothing but that id travels through the model. The wrapper adds the hidden arguments Open WebUI
+    fills in; the tool's visible signature and docstring are unchanged.
+    """
+    signature = inspect.signature(method)
+    hidden = [name for name in ('__request__', '__user__') if name not in signature.parameters]
+
+    @functools.wraps(method)
+    async def wrapper(self, *args, **kwargs):
+        request = kwargs.pop('__request__', None) if '__request__' in hidden else kwargs.get('__request__')
+        user = kwargs.pop('__user__', None) if '__user__' in hidden else kwargs.get('__user__')
+        result = await method(self, *args, **kwargs)
+        if HTMLResponse is None or not isinstance(result, HTMLResponse):
+            return result
+        return await self._publish_visual(result, method.__name__, request, user)
+
+    parameters = list(signature.parameters.values())
+    parameters += [inspect.Parameter(name, inspect.Parameter.KEYWORD_ONLY, default=None) for name in hidden]
+    wrapper.__signature__ = signature.replace(parameters=parameters)
+    return wrapper
 
 
 class Tools:
@@ -1124,9 +1167,10 @@ pre.vis{{
         steps: Any,
         *,
         title: str = "Flowchart",
-    ) -> str:
+        mode: OutputMode = "auto",
+    ) -> Any:
         """
-        Render an ASCII flowchart. Supports two formats:
+        Render a flowchart (box drawing in text mode, a card in embed mode). Supports two formats:
 
         1. List of strings: sequential box-drawing flowchart
            ["Start", "Process", "End"]
@@ -1136,6 +1180,7 @@ pre.vis{{
 
         :param steps: List of strings or edge dicts
         :param title: Flowchart title
+        :param mode: "embed", "text", or "auto"
         """
         v = self._coerce_json(steps, "list")
         if not isinstance(v, list) or not v:
@@ -1152,7 +1197,7 @@ pre.vis{{
                 lines.append("\u2514" + "\u2500" * (w - 2) + "\u2518")
                 if i < len(v) - 1:
                     lines.append(" " * ((w - 1) // 2) + "\u2193")
-            return f"### {title}\n\n```text\n" + "\n".join(lines) + "\n```"
+            return self._flowchart_output(title, "\n".join(lines), mode)
 
         if isinstance(v[0], dict):
             # Edge-based graph
@@ -1168,9 +1213,21 @@ pre.vis{{
                     edges.append(f"[{a}]{mid}[{b}]")
             if not edges:
                 return "No valid edges. Each step needs 'from' and 'to'."
-            return f"### {title}\n\n```text\n" + "\n".join(edges) + "\n```"
+            return self._flowchart_output(title, "\n".join(edges), mode)
 
         return "Invalid steps: expected strings or {from, to} dicts."
+
+    def _flowchart_output(self, title: str, text: str, mode: OutputMode) -> Any:
+        if self._resolve_mode(mode) == "text" or HTMLResponse is None:
+            return f"### {title}\n\n```text\n{text}\n```"
+        body = f"""<div class="card">
+<div class="title">{html.escape(title)}</div>
+<pre class="vis">{html.escape(text)}</pre>
+</div>"""
+        return HTMLResponse(
+            content=self._wrap_html(title, body),
+            headers={"Content-Disposition": "inline"},
+        )
 
     # ================================================================
     # PUBLIC: render_tree
@@ -2185,9 +2242,43 @@ pre.vis{{
             headers={"Content-Disposition": "inline"},
         )
 
+    async def _register_image(self, raw: bytes, name: str, image_format: str, result: dict, request, user, emitter) -> None:
+        """Register an exported image in the caller's Files store and show it in chat.
+
+        Sets download_url and status 'success'; a registration failure leaves the verified Terminal copy as
+        'partial_success' with a warning, and never claims a link.
+        """
+        from io import BytesIO
+        from fastapi import UploadFile
+        from starlette.datastructures import Headers
+        from open_webui.models.users import Users
+        from open_webui.routers.files import upload_file_handler
+        content_type = 'image/png' if image_format == 'png' else 'image/jpeg'
+        owner = await Users.get_user_by_id((user or {}).get('id'))
+        if not owner:
+            raise ValueError('Authenticated chart user is unavailable')
+        try:
+            file = await upload_file_handler(request=request,
+                file=UploadFile(file=BytesIO(raw), filename=name, headers=Headers({'content-type': content_type})),
+                metadata={}, process=False, user=owner)
+            file_id = file.get('id') if isinstance(file, dict) else getattr(file, 'id', None)
+            if not file_id:
+                raise ValueError('Files API registration returned no ID')
+            result.update(status='success', file_id=str(file_id), download_url='/api/v1/files/' + str(file_id) + '/content')
+        except Exception:
+            result.update(status='partial_success')
+            result['warnings'].append('Chart saved in Terminal, but authenticated download registration failed; no download link was created.')
+        if result['download_url'] and emitter:
+            try:
+                await emitter({'type': 'files', 'data': {'files': [
+                    {'type': 'image', 'id': result['file_id'], 'name': name, 'url': result['download_url'], 'content_type': content_type}]}})
+            except Exception:
+                result['warnings'].append('Image preview event failed; the authenticated download and Terminal output remain available.')
+
     async def render_visualization(
         self,
         specification: dict,
+        save_to: Optional[str] = None,
         __request__=None,
         __user__=None,
         __metadata__=None,
@@ -2207,18 +2298,25 @@ pre.vis{{
         Only trusted chart fields are accepted; no JS, Python, URLs or host paths.
         One normalized Plotly figure supplies browser and PNG; fonts/themes derive
         from the current PowerPoint starter. Default PNG; format jpeg is optional.
-        Return the exact download_url and confirmed workspace_path from the result.
+        Return one download URL per artifact, preferring download_url and using
+        terminal_download_url only as a fallback for a verified Terminal copy.
+        Never show both URLs. Keep workspace_path internally; show it only for an
+        explicit Terminal save/open/edit/reuse request. To put the image in a deck,
+        pass the returned workspace_path as terminal_image_path on a generate_slides
+        slide that uses template_layout "Chart Slide" (it is sized for that layout) and
+        set show_title:false in the specification, because the slide already has its title. Optional save_to puts the
+        image elsewhere in the user's home: a folder ("projects/report", relative to
+        ~/workspace, or "~/folder") or a full path ending in .png/.jpg; the default is
+        ~/workspace/output and nothing is overwritten.
         A selected registered Terminal is required. Partial success preserves the
         verified available asset; report warnings instead of claiming both copies.
+
+        :param specification: The chart specification described above.
+        :param save_to: Where in the user's home to save the image instead of ~/workspace/output: a folder ("projects/report" under ~/workspace, or "~/Documents/board-pack") or a full path ending in .png/.jpg. Use this instead of copying the file afterwards with the shell.
         """
         import hashlib
         import uuid
-        from io import BytesIO
-        from fastapi import UploadFile
-        from starlette.datastructures import Headers
         from open_webui.models.tools import Tools as OfficeTools
-        from open_webui.models.users import Users
-        from open_webui.routers.files import upload_file_handler
 
         async def status(description, done):
             if __event_emitter__:
@@ -2229,59 +2327,51 @@ pre.vis{{
 
         workspace_path = None
         result = {'status': 'error', 'file_id': None, 'file_name': None,
-                  'download_url': None, 'workspace_path': None, 'terminal_saved': False,
-                  'warnings': [], 'error': None}
+                  'download_url': None, 'workspace_path': None, 'terminal_download_url': None,
+                  'terminal_saved': False, 'size': None, 'warnings': [], 'error': None}
         try:
             if not isinstance(specification, dict):
                 raise ValueError('specification must be an object')
             context = await _terminal_context(__request__, __user__, __metadata__)
             valves = await OfficeTools.get_tool_valves_by_id('generate_slide_pptx') or {}
-            theme = _pptx_visual_theme(valves.get('starter_template_b64'),
-                                       specification.get('picture_layout', 'Title w/Image'))
+            starter = valves.get('starter_template_b64')
+            if specification.get('picture_layout') is not None:
+                theme = _pptx_visual_theme(starter, specification['picture_layout'])
+            else:
+                # Sized for the starter's Chart Slide so the image fills a chart slide's wide area; the
+                # old default was the portrait picture layout, which squeezed charts into a tall canvas.
+                try:
+                    theme = _pptx_visual_theme(starter, 'Chart Slide')
+                except ValueError:
+                    theme = _pptx_visual_theme(starter, 'Title w/Image')
             figure, info = _visual_figure(specification, theme)
             image_format = specification.get('format', 'png')
             if image_format not in ('png', 'jpeg'):
                 raise ValueError('Export format must be png or jpeg')
+            save_to = save_to if save_to is not None else specification.get('save_to')
+            if save_to is not None and not isinstance(save_to, str):
+                raise ValueError('save_to must be a folder or file path')
             await status('Rendering Plotly chart and saving output...', False)
-            saved = await _terminal_plotly(context, figure, theme, info['width'], info['height'], image_format)
+            title_slug = re.sub(r'[^A-Za-z0-9]+', '-', str(specification.get('title') or 'chart')).strip('-').lower()[:60] or 'chart'
+            saved = await _terminal_plotly(context, figure, theme, info['width'], info['height'], image_format,
+                                           save_to=save_to, name=title_slug)
             workspace_path = saved['workspace_path']
             result.update(workspace_path=workspace_path, terminal_saved=True, theme=theme,
+                          terminal_download_url=_terminal_download_url((__metadata__ or {}).get('terminal_id'), workspace_path),
                           actual_font=saved['font'], source_metadata=info['metadata'])
             result['warnings'] = list(info['warnings']) + saved['warnings']
             raw = await _terminal_image(context, workspace_path)
             if hashlib.sha256(raw).hexdigest() != saved['sha256']:
                 raise ValueError('Rendered chart changed during transfer')
             name = workspace_path.rsplit('/', 1)[-1]
-            result.update(file_name=name, sha256=saved['sha256'], width=info['width'], height=info['height'])
-            user = await Users.get_user_by_id((__user__ or {}).get('id'))
-            if not user:
-                raise ValueError('Authenticated chart user is unavailable')
-            try:
-                file = await upload_file_handler(request=__request__,
-                    file=UploadFile(file=BytesIO(raw), filename=name,
-                        headers=Headers({'content-type': 'image/png' if image_format == 'png' else 'image/jpeg'})),
-                    metadata={}, process=False, user=user)
-                file_id = file.get('id') if isinstance(file, dict) else getattr(file, 'id', None)
-                if not file_id:
-                    raise ValueError('Files API registration returned no ID')
-                url = '/api/v1/files/' + str(file_id) + '/content'
-                result.update(status='success', file_id=str(file_id), download_url=url)
-            except Exception:
-                result.update(status='partial_success')
-                result['warnings'].append('Chart saved in Terminal, but authenticated download registration failed; no download link was created.')
-            if result['download_url'] and __event_emitter__:
-                try:
-                    await __event_emitter__({'type': 'files', 'data': {'files': [
-                        {'type': 'image', 'id': result['file_id'], 'name': name, 'url': result['download_url'],
-                         'content_type': 'image/png' if image_format == 'png' else 'image/jpeg'}]}})
-                except Exception:
-                    result['warnings'].append('Image preview event failed; the authenticated download and Terminal output remain available.')
+            result.update(file_name=name, size=saved['size'], sha256=saved['sha256'], width=info['width'], height=info['height'])
+            await self._register_image(raw, name, image_format, result, __request__, __user__, __event_emitter__)
             figure = saved['figure']
             cid = 'visual-' + uuid.uuid4().hex
             body = self._plotly_body(cid, figure['data'], figure['layout'])
             fonts = '''<style>@font-face{font-family:"Liberation Sans";src:url("/static/plotly/LiberationSans-Regular.ttf")}@font-face{font-family:"Liberation Sans";font-weight:700;src:url("/static/plotly/LiberationSans-Bold.ttf")}</style>'''
             # Deterministic native image remains visible when scripts/local JS are unavailable.
-            result['instructions'] = 'Interactive HTML is returned. An image preview is requested only when download_url exists; check warnings. Preserve download_url exactly. Use workspace_path for terminal_image_path when terminal_saved is true. Disclose font fallback and coverage warnings.'
+            result['instructions'] = 'Interactive HTML is returned. An image preview is requested only when download_url exists; check warnings. Use workspace_path for terminal_image_path when terminal_saved is true. Disclose font fallback and coverage warnings. ' + _DELIVERY_INSTRUCTIONS
             await status('Chart ready.' if result['status'] == 'success' else 'Terminal chart ready; download unavailable.', True)
             return HTMLResponse(content=self._wrap_html(specification.get('title', 'Chart'), fonts + body, theme=theme),
                                 headers={'Content-Disposition': 'inline'}), result
@@ -2291,3 +2381,131 @@ pre.vis{{
                 result['warnings'].append('Terminal output is verified; another delivery stage did not finish. Check download_url to see whether Files registration succeeded.')
             await status('Chart delivery failed.', True)
             return result
+
+    async def _publish_visual(self, response, tool_name: str, request, user) -> Any:
+        """Keep the page in the caller's Files store; return it with a result that carries its visual_id."""
+        page = response.body
+        if not request or not user or not user.get('id') or not 0 < len(page) <= _VISUAL_LIMIT:
+            return response
+        try:
+            from io import BytesIO
+            import uuid
+            from fastapi import UploadFile
+            from starlette.datastructures import Headers
+            from open_webui.models.users import Users
+            from open_webui.routers.files import upload_file_handler
+            owner = await Users.get_user_by_id(user.get('id'))
+            if not owner:
+                return response
+            file = await upload_file_handler(request=request,
+                file=UploadFile(file=BytesIO(page), filename='visual-' + uuid.uuid4().hex + '.html',
+                                headers=Headers({'content-type': 'text/html'})),
+                metadata={}, process=False, user=owner)
+            visual_id = file.get('id') if isinstance(file, dict) else getattr(file, 'id', None)
+            if not visual_id:
+                return response
+        except Exception:
+            return response  # The visualization is still shown; it just cannot be exported as an image.
+        title = re.search(rb'<title>(.*?)</title>', page, re.S)
+        return response, {
+            'status': 'success', 'visual_id': str(visual_id), 'tool': tool_name,
+            'title': html.unescape(title.group(1).decode('utf-8', 'replace')) if title else None,
+            'instructions': 'The visualization is displayed to the user. To get it as an image (for a slide, a document or a download), '
+                            'call export_visual with this visual_id; add theme "light" for a white background that suits slides. '
+                            'Do not re-create the visualization or pass its content again.',
+        }
+
+    async def export_visual(
+        self,
+        visual_id: str,
+        save_to: Optional[str] = None,
+        theme: Literal["as_shown", "light"] = "as_shown",
+        width: Optional[int] = None,
+        format: Literal["png", "jpeg"] = "png",
+        __request__=None,
+        __user__=None,
+        __metadata__=None,
+        __event_emitter__=None,
+    ) -> Any:
+        """Turn a visualization made by any render_* tool into an image (PNG by default) in the user's Open Terminal.
+
+        Pass the visual_id that the render_* tool returned. The image is what the user saw in chat, drawn
+        by the terminal's browser, saved to ~/workspace/output (or save_to) with a download link. Use
+        theme "light" for a white background when the image goes onto a slide or a document. To put the
+        image in a deck, pass the returned workspace_path as terminal_image_path on a generate_slides
+        slide that uses template_layout "Chart Slide" with image_fit "contain".
+        Return one download URL per artifact, preferring download_url and using terminal_download_url only
+        as a fallback for a verified Terminal copy. Keep workspace_path internally; show it only for an
+        explicit Terminal save/open/edit/reuse request. A selected registered Terminal is required.
+
+        :param visual_id: The visual_id returned by the render_* tool. Nothing else is accepted.
+        :param save_to: Where in the user's home to save the image instead of ~/workspace/output: a folder ("projects/report" under ~/workspace, or "~/Documents/board-pack") or a full path ending in .png/.jpg. Use this instead of copying the file afterwards with the shell.
+        :param theme: "as_shown" keeps the dark card from chat; "light" swaps it for a white background with dark text (use for slides and documents).
+        :param width: Image width in pixels, 600 to 2400. Default 1280. The height follows the content.
+        :param format: "png" (default) or "jpeg".
+        """
+        import asyncio
+        import hashlib
+        from open_webui.models.files import Files
+        from open_webui.storage.provider import Storage
+
+        async def status(description, done):
+            if __event_emitter__:
+                try:
+                    await __event_emitter__({'type': 'status', 'data': {'description': description, 'done': done}})
+                except Exception:
+                    pass
+
+        workspace_path = None
+        result = {'status': 'error', 'file_id': None, 'file_name': None, 'download_url': None, 'workspace_path': None,
+                  'terminal_download_url': None, 'terminal_saved': False, 'size': None, 'warnings': [], 'error': None}
+        try:
+            if format not in ('png', 'jpeg'):
+                raise ValueError('format must be png or jpeg')
+            if theme not in ('as_shown', 'light'):
+                raise ValueError('theme must be as_shown or light')
+            if width is not None and (isinstance(width, bool) or not isinstance(width, int) or not 600 <= width <= 2400):
+                raise ValueError('width must be a whole number from 600 to 2400')
+            if save_to is not None and not isinstance(save_to, str):
+                raise ValueError('save_to must be a folder or file path')
+            if not (__user__ or {}).get('id'):
+                raise ValueError('Sign in to export a visualization')
+            record = await Files.get_file_by_id(str(visual_id or '').strip())
+            if (record is None or record.user_id != __user__['id'] or not _VISUAL_NAME.match(record.filename or '')):
+                raise ValueError('No visualization with that visual_id was found. Use the visual_id returned by the render tool that made it.')
+            context = await _terminal_context(__request__, __user__, __metadata__)
+            local = await asyncio.to_thread(Storage.get_file, record.path)
+            with open(local, 'rb') as stream:
+                page = stream.read(_VISUAL_LIMIT + 1)
+            if not 0 < len(page) <= _VISUAL_LIMIT:
+                raise ValueError('The stored visualization is empty or too large')
+            text = page.decode('utf-8')
+            if theme == 'light':
+                text = _light_page(text)
+            title = re.search(r'<title>(.*?)</title>', text, re.S)
+            slug = re.sub(r'[^A-Za-z0-9]+', '-', html.unescape(title.group(1)) if title else 'visual').strip('-').lower()[:60] or 'visual'
+            await status('Rendering the visualization as an image...', False)
+            saved = await _terminal_screenshot(context, text, width=width or 1280, format=format, save_to=save_to, name=slug)
+            workspace_path = saved['workspace_path']
+            result.update(workspace_path=workspace_path, terminal_saved=True,
+                          terminal_download_url=_terminal_download_url((__metadata__ or {}).get('terminal_id'), workspace_path))
+            result['warnings'] = list(saved.get('warnings') or [])
+            raw = await _terminal_image(context, workspace_path)
+            if hashlib.sha256(raw).hexdigest() != saved['sha256']:
+                raise ValueError('The image changed during transfer')
+            name = workspace_path.rsplit('/', 1)[-1]
+            result.update(file_name=name, size=saved['size'], sha256=saved['sha256'], width=saved['width'], height=saved['height'])
+            await self._register_image(raw, name, format, result, __request__, __user__, __event_emitter__)
+            result['instructions'] = ('Use workspace_path as terminal_image_path when the image goes into a deck. ' + _DELIVERY_INSTRUCTIONS)
+            await status('Image ready.' if result['status'] == 'success' else 'Image saved in the terminal; download unavailable.', True)
+            return result
+        except Exception as exc:
+            result.update(status='partial_success' if workspace_path else 'error', error=str(exc))
+            if workspace_path:
+                result['warnings'].append('The terminal copy is verified; another delivery step did not finish.')
+            await status('Image export failed.', True)
+            return result
+
+
+for _name in [n for n in vars(Tools) if n.startswith('render_') and n != 'render_visualization']:
+    setattr(Tools, _name, _storable(vars(Tools)[_name]))

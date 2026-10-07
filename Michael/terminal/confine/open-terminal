@@ -1,0 +1,10 @@
+#!/usr/local/bin/python3-ot
+"""Start Open Terminal with the file-API confinement applied. Fails closed if the patch cannot apply."""
+import sys
+
+sys.path.insert(0, "/opt/michael")
+import michael_confine  # noqa: E402,F401  (side effect: patches UserFS or raises)
+from open_terminal.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main())

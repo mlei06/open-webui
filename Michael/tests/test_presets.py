@@ -46,17 +46,26 @@ class DeclarationTests(unittest.TestCase):
 
     def test_tools_are_scoped_per_preset(self):
         ids = {k: want(k)['meta']['toolIds'] for k in BY_ID}
-        self.assertEqual(ids['document-translator'], ['server:mcp:doctranslator', 'document_translator'])
+        self.assertEqual(ids['document-translator'], ['server:mcp:doctranslator', 'document_translator', 'workspace_files'])
         self.assertEqual(ids['web-searcher'], [])
         self.assertEqual(ids['knowledge-base-manager'], ['knowledge_base_manager'])
-        self.assertEqual(ids['office-agent'], ['server:mcp:employee_directory', 'server:mcp:mail', 'server:mcp:path'])
-        self.assertEqual(ids['office-documents'], ['generate_slide_pptx', 'generate_docx_documents'])
+        self.assertEqual(ids['office-agent'], ['server:mcp:employee_directory', 'server:mcp:mail', 'server:mcp:path', 'workspace_files'])
+        self.assertEqual(ids['office-documents'], ['generate_slide_pptx', 'generate_docx_documents', 'workspace_files'])
         self.assertEqual(
             set(ids['lenny']),
-            {'server:mcp:doctranslator', 'document_translator', 'server:mcp:employee_directory', 'server:mcp:mail',
-             'generate_slide_pptx', 'visuals_toolkit_v4', 'generate_docx_documents', 'knowledge_base_manager', 'server:mcp:qdts', 'server:mcp:path',
-             'delegate_agents'},  # Lenny has every tool
-        )
+            {'server:mcp:doctranslator', 'document_translator', 'server:mcp:mail', 'generate_slide_pptx', 'visuals_toolkit_v4',
+             'generate_docx_documents', 'server:mcp:qdts', 'server:mcp:path', 'delegate_agents', 'workspace_files'},
+        )  # Lenny keeps the generators and web search; it delegates heavy or background jobs by instruction
+
+    def test_lenny_has_no_employee_directory_and_no_knowledge_base(self):
+        w = want('lenny')
+        self.assertNotIn('server:mcp:employee_directory', w['meta']['toolIds'])
+        self.assertNotIn('knowledge_base_manager', w['meta']['toolIds'])
+        self.assertFalse(w['meta']['builtinTools']['knowledge'])
+        self.assertEqual(BY_ID['lenny']['knowledge_bases'], [])
+        text = (w['params']['system'] + w['meta']['description']).lower()
+        for gone in ('sop', 'employee directory', 'the directory', 'knowledge base', 'knowledge-base'):
+            self.assertNotIn(gone, text, gone)
 
     def test_path_is_scoped_read_only_without_mail_web_files_or_knowledge(self):
         w = p.desired_model(BY_ID['path'], DOC['base_model'], FILTERS, {'SOPs': KB})
@@ -149,21 +158,45 @@ KB = {'id': 'kb-1', 'name': 'SOPs', 'description': 'seed'}
 class KnowledgeTests(unittest.TestCase):
     def test_every_preset_attaches_the_sops_base_by_default_and_turns_on_the_knowledge_tool(self):
         for k in BY_ID:
-            if k in ('case-assistant', 'path'):
+            if k in ('case-assistant', 'path', 'lenny'):
                 self.assertEqual(BY_ID[k]['knowledge_bases'], [])
-                continue  # explicitly case-tools-only
+                continue  # explicitly without the SOPs base
             self.assertEqual(BY_ID[k]['knowledge_bases'], ['SOPs'], k)
             w = p.desired_model(BY_ID[k], 'base-x', FILTERS, {'SOPs': KB})
             self.assertEqual(w['meta']['knowledge'], [{'id': 'kb-1', 'name': 'SOPs', 'type': 'collection', 'description': 'seed'}], k)
             self.assertTrue(w['meta']['builtinTools']['knowledge'], k)
 
     def test_base_that_does_not_exist_yet_is_not_attached_but_the_tool_is_on(self):
-        w = want('lenny')
+        w = want('office-agent')
         self.assertNotIn('knowledge', w['meta'])
         self.assertTrue(w['meta']['builtinTools']['knowledge'])
 
+    def test_a_retired_base_is_detached_but_the_users_own_attachments_stay(self):
+        w = want('lenny')
+        live = json.loads(json.dumps(w))
+        live['meta']['knowledge'] = [{**KB, 'type': 'collection'}, {'id': 'mine', 'name': 'Mine', 'type': 'collection'}]
+        self.assertTrue(p.matches(live, w))  # unmanaged: nothing is known to be retired
+        self.assertFalse(p.matches(live, w, {'kb-1'}))
+        sent = []
+        orig = p.get_model, p.call
+        try:
+            p.get_model = lambda base, token, mid: json.loads(json.dumps(live))
+            p.call = lambda base, method, route, token=None, body=None: sent.append(body)
+            self.assertEqual(p.upsert('b', 't', w, apply=True, managed={'kb-1'}), 'updated')
+        finally:
+            p.get_model, p.call = orig
+        self.assertEqual([k['id'] for k in sent[0]['meta']['knowledge']], ['mine'])
+        live['meta']['knowledge'] = [live['meta']['knowledge'][0]]
+        try:
+            p.get_model = lambda base, token, mid: json.loads(json.dumps(live))
+            p.call = lambda base, method, route, token=None, body=None: sent.append(body)
+            p.upsert('b', 't', w, apply=True, managed={'kb-1'})
+        finally:
+            p.get_model, p.call = orig
+        self.assertEqual(sent[1]['meta']['knowledge'], [])
+
     def test_user_added_knowledge_is_kept_and_a_missing_attachment_is_detected(self):
-        w = p.desired_model(BY_ID['lenny'], 'base-x', FILTERS, {'SOPs': KB})
+        w = p.desired_model(BY_ID['office-agent'], 'base-x', FILTERS, {'SOPs': KB})
         live = json.loads(json.dumps(w))
         self.assertTrue(p.matches(live, w))
         live['meta']['knowledge'].append({'id': 'mine', 'name': 'Mine', 'type': 'collection'})
@@ -258,7 +291,7 @@ class MatchTests(unittest.TestCase):
             self.assertFalse(p.matches(m, want('lenny')))
 
     def test_missing_refs_notes_unregistered_mail(self):
-        tools = {'document_translator', 'knowledge_base_manager', 'generate_slide_pptx', 'generate_docx_documents', 'visuals_toolkit_v4', 'delegate_agents'}
+        tools = {'document_translator', 'knowledge_base_manager', 'generate_slide_pptx', 'generate_docx_documents', 'visuals_toolkit_v4', 'delegate_agents', 'workspace_files'}
         got = p.missing_refs(PRESETS, FILTERS, {'doctranslator', 'employee_directory', 'qdts', 'path'}, tools, {'user_context'})
         self.assertEqual({(a, c, d) for a, _, c, d in got}, {('lenny', 'mail', False), ('office-agent', 'mail', False)})
         got = p.missing_refs(PRESETS, FILTERS, {'mail'}, set(), set())

@@ -14,7 +14,7 @@ else:
  container=result.stdout.strip()
  if not container: raise SystemExit('Start the Michael Compose stack first')
 (root/'runtime/template-review').mkdir(parents=True,exist_ok=True)
-files={p:(root/p).read_text() for p in ('tools/office_delivery.py','tools/generate_slides.py','tools/generate_documents.py','tests/test_slide_template.py','tests/test_office_tools.py','tests/test_document_delivery.py','bootstrap/office_tools.py','bootstrap/davy_connection.py','models/presets.json','branding/tokens.json','branding/powerpoint.json','tests/fixtures/slide-template-example.json')}
+files={p:(root/p).read_text() for p in ('tools/workspace_delivery.py','tools/generate_slides.py','tools/generate_documents.py','tests/test_slide_template.py','tests/test_office_tools.py','tests/test_document_delivery.py','bootstrap/office_tools.py','bootstrap/davy_connection.py','models/presets.json','branding/tokens.json','branding/powerpoint.json','tests/fixtures/slide-template-example.json')}
 payload={'files':files,'template':base64.b64encode((root/'runtime/brand/lenovo-starter.pptx').read_bytes()).decode()}
 code='''import sys,json,tempfile,subprocess,os,base64,importlib.util,asyncio
 from pathlib import Path

@@ -49,7 +49,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 key = json.load(sys.stdin)['key']
 async def main():
-    url = 'http://qdts-cases:8000/mcp'
+    url = 'http://qdts-cases:8000/mcp/v2'
     async with httpx.AsyncClient() as c:
         r = await c.post(url, json={})
         assert r.status_code == 401
@@ -59,29 +59,26 @@ async def main():
         async with ClientSession(r, w) as session:
             await session.initialize()
             tools = (await session.list_tools()).tools
-            assert {'search_cases','get_case','get_case_notes','get_case_summary',
-                    'get_case_status','get_case_slice','get_cases','get_case_filter_values',
-                    'lookup_case_entities'} == {t.name for t in tools}
+            assert {'lookup_entities','get_entity','search_cases','search_notes','search_tasks',
+                    'aggregate_records','get_cases','get_records'} == {t.name for t in tools}
             for name, args in [
-                ('get_case', {'id':'QDTS-26-000001', 'sections':['people','tasks']}),
-                ('get_case_summary', {'id':'QDTS-26-000001'}),
-                ('get_case_status', {'id':'QDTS-26-000001'}),
-                ('get_case_slice', {'id':'QDTS-26-000001', 'section':'people'}),
+                ('get_cases', {'ids':['QDTS-26-000001'], 'view':'summary'}),
                 ('get_cases', {'ids':['QDTS-26-000001'], 'view':'status'}),
-                ('get_case_filter_values', {'field':'state'}),
-                ('lookup_case_entities', {'kind':'people', 'query':'fixtureone'}),
+                ('get_cases', {'ids':['QDTS-26-000001'], 'view':'people'}),
+                ('aggregate_records', {'request':{'record_type':'case','group_by':['case_state']}}),
+                ('lookup_entities', {'kind':'employee', 'query':'fixtureone'}),
             ]:
                 result = await session.call_tool(name, args)
                 assert not result.isError, name
             schema = next(t.inputSchema for t in tools if t.name == 'search_cases')
-            result = await session.call_tool('search_cases', {'query':'privatequartz','include_notes':True})
+            result = await session.call_tool('search_cases', {'filters':{'query':'privatequartz','include_notes':True}})
             assert not result.isError
             data = result.structuredContent
             if not data:
                 data = json.loads(result.content[0].text)
             if 'result' in data: data = data['result']
             assert data['total'] == 5, data.keys()
-            result = await session.call_tool('get_case_notes', {'id':'QDTS-26-000001'})
+            result = await session.call_tool('search_notes', {'filters':{'cases':{'case_number':'QDTS-26-000001'}}})
             assert not result.isError and 'privatequartz' in str(result)
             print('PASS auth, discovery, private-note search and lookup; closure sort supported=' + str('closed_newest' in json.dumps(schema)))
 asyncio.run(main())
@@ -184,14 +181,14 @@ def main():
                 ids = models[model]['info']['meta']['toolIds']
                 assert 'server:mcp:qdts' in ids
                 if model == 'case-assistant':
-                    assert ids == ['server:mcp:qdts']
+                    assert ids == ['server:mcp:qdts', 'visuals_toolkit_v4']
                 for marker in ('MY', 'BLOCKED', 'CLOSED', 'PEOPLE', 'PRIVATE', 'STATUS', 'SUMMARY', 'TASKS', 'BATCH', 'FILTERS', 'LOOKUP'):
                     res = stack.chat(user, model, 'TEST_' + marker, wait=60, tries=1)
                     assert not res['timeout'] and res['text'], f'{model}/{marker} did not finish'
                     expected = {'MY':'search_cases', 'BLOCKED':'search_cases', 'CLOSED':'search_cases',
-                                'PEOPLE':'get_case_slice', 'PRIVATE':'get_case_notes', 'STATUS':'get_case_status',
-                                'SUMMARY':'get_case_summary', 'TASKS':'get_case_slice', 'BATCH':'get_cases',
-                                'FILTERS':'get_case_filter_values', 'LOOKUP':'lookup_case_entities'}[marker]
+                                'PEOPLE':'get_cases', 'PRIVATE':'search_notes', 'STATUS':'get_cases',
+                                'SUMMARY':'get_cases', 'TASKS':'search_tasks', 'BATCH':'get_cases',
+                                'FILTERS':'aggregate_records', 'LOOKUP':'lookup_entities'}[marker]
                     assert any(t.endswith(expected) for t in res['tools']), f'{model}/{marker} missing tool'
                     if marker in ('STATUS', 'SUMMARY', 'TASKS', 'PEOPLE'):
                         assert not any(t.endswith('get_case') for t in res['tools']), f'{model}/{marker} fetched full case'

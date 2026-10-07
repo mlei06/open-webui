@@ -10,7 +10,7 @@ Maintain a minimally divergent Open WebUI fork and a reproducible Docker Compose
 - Planned services: Open WebUI, SearXNG, Open Terminal, local MCP services, and bridges for stdio-only MCP services.
 - Planned specialized model presets/agents: document translator first; prompts and tool permissions managed declaratively.
 
-Read `Michael/docs/ONBOARDING.md` before implementation. Current onboarding is a plan, not a running stack.
+Read `Michael/docs/README.md` (the documentation index) and `Michael/docs/deployment.md` before implementation. All documentation lives in `Michael/docs/`, one file per Open WebUI feature (models, tools, mcp, functions, terminal, skills, knowledge, accounts, branding); update the matching file when behaviour changes.
 
 ## Security and reproducibility
 

@@ -8,4 +8,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip install --no-cache-dir plotly==7.0.0 kaleido==1.2.0 choreographer==1.4.0
 ENV BROWSER_PATH=/usr/bin/chromium
+# Confine the multi-user file API to the caller's home plus the read-only /shared area. The launcher
+# is first on PATH, so the base entrypoint's `exec open-terminal` starts it; it refuses to start if
+# the patch cannot apply. See docs/terminal.md.
+COPY Michael/terminal/confine/michael_confine.py /opt/michael/michael_confine.py
+COPY --chmod=0755 Michael/terminal/confine/open-terminal /opt/michael/bin/open-terminal
+ENV PATH=/opt/michael/bin:${PATH}
 USER user

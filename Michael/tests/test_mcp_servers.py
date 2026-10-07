@@ -33,13 +33,13 @@ class InventoryTests(unittest.TestCase):
         self.assertFalse(BY_ID['employee_directory_write']['enabled'])
         self.assertEqual(BY_ID['employee_directory_write']['access'], {'type': 'admin'})
 
-    def test_qdts_thirteen_read_only_tools_and_filter(self):
-        expected = ['search_cases','aggregate_cases','search_product','search_team','search_customer', 'get_case', 'get_case_notes', 'get_case_summary',
-                    'get_case_status', 'get_case_slice', 'get_cases',
-                    'get_case_filter_values', 'lookup_case_entities']
+    def test_qdts_eight_read_only_tools_and_filter(self):
+        expected = ['lookup_entities', 'get_entity', 'search_cases', 'search_notes', 'search_tasks',
+                    'aggregate_records', 'get_cases', 'get_records']
         self.assertEqual(BY_ID['qdts']['tools'], expected)
         self.assertEqual(BY_ID['qdts']['function_name_filter_list'], expected)
         connection = want('qdts', {'QDTS_MCP_API_KEY': 'synthetic'})
+        self.assertEqual(connection['url'], 'http://qdts-cases:8000/mcp/v2')
         filters = connection['config']['function_name_filter_list'].split(',')
         for name in expected:
             self.assertTrue(m.name_allowed('qdts_' + name, filters))

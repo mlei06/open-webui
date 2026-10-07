@@ -139,17 +139,17 @@
     {
       "id": "qdts",
       "name": "QDTS cases",
-      "description": "Read-only internal cases, summaries, people and all notes including private notes. Shared access, no per-user authorization.",
+      "description": "Read-only QDTS replica: eight v2 tools for entities, cases, notes, tasks and exact whole-population counts. Shared access includes private/system notes.",
       "type": "mcp",
       "transport": "streamable-http",
-      "url": "${QDTS_MCP_URL}",
+      "url": "${QDTS_MCP_V2_URL}",
       "env": [
         {
-          "name": "QDTS_MCP_URL",
+          "name": "QDTS_MCP_V2_URL",
           "required": false,
           "secret": false,
-          "description": "Case endpoint reachable from Open WebUI, not browser localhost.",
-          "default": "http://qdts-cases:8000/mcp"
+          "description": "Versioned eight-tool endpoint reachable from Open WebUI. Requires schema-3 index and v2 service; legacy QDTS_MCP_URL is not used.",
+          "default": "http://qdts-cases:8000/mcp/v2"
         },
         {
           "name": "QDTS_MCP_API_KEY",
@@ -167,34 +167,24 @@
       },
       "enabled": true,
       "tools": [
+        "lookup_entities",
+        "get_entity",
         "search_cases",
-        "aggregate_cases",
-        "search_product",
-        "search_team",
-        "search_customer",
-        "get_case",
-        "get_case_notes",
-        "get_case_summary",
-        "get_case_status",
-        "get_case_slice",
+        "search_notes",
+        "search_tasks",
+        "aggregate_records",
         "get_cases",
-        "get_case_filter_values",
-        "lookup_case_entities"
+        "get_records"
       ],
       "function_name_filter_list": [
+        "lookup_entities",
+        "get_entity",
         "search_cases",
-        "aggregate_cases",
-        "search_product",
-        "search_team",
-        "search_customer",
-        "get_case",
-        "get_case_notes",
-        "get_case_summary",
-        "get_case_status",
-        "get_case_slice",
+        "search_notes",
+        "search_tasks",
+        "aggregate_records",
         "get_cases",
-        "get_case_filter_values",
-        "lookup_case_entities"
+        "get_records"
       ]
     },
     {

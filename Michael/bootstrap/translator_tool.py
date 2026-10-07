@@ -27,6 +27,7 @@ then TRANSLATOR_BASE_MODEL, then models/presets.json).
 import sys
 
 from davy_connection import MICHAEL_DIR, ApiError, base_model_of, call, get_token, load_env
+from office_tools import bundle_delivery_source
 
 TOOL_ID = 'document_translator'
 TOOL_FILE = MICHAEL_DIR / 'tools' / 'document_translator.py'
@@ -50,7 +51,8 @@ def settings(env):
 
 def upsert_tool(base, token, cfg):
     """Create or update the workspace tool and its valves. Returns (tool_changed, valves_changed)."""
-    source = TOOL_FILE.read_text()
+    # The terminal-copy helpers are shared with the Office tools and embedded so the tool stays standalone.
+    source = bundle_delivery_source(TOOL_FILE.read_text())
     form = {
         'id': TOOL_ID,
         'name': 'Document Translator',

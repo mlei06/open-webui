@@ -35,6 +35,28 @@ def _visual_date(value):
         raise ValueError('Use valid ISO dates') from None
 
 
+# Categorical colours that stay distinguishable side by side. The starter's six accents cycle, so a
+# chart with more than a few series would repeat colours; these are used instead once there are four or more.
+_DISTINCT_COLORS = ['#E1251B', '#1F4E79', '#2E8B57', '#C17A00', '#6D73C9', '#BD5E91',
+                    '#008C95', '#5B5B5B', '#8E6C8A', '#D4A017', '#3046AD', '#7A3E00']
+
+
+def _colorway(theme, count):
+    """Colours for `count` series: the template's own accents for up to three, a distinct set beyond."""
+    if count <= 3:
+        return list(theme['colors'])
+    return list(_DISTINCT_COLORS)
+
+
+def _is_dark(color):
+    try:
+        value = color.lstrip('#')
+        red, green, blue = (int(value[i:i + 2], 16) for i in (0, 2, 4))
+    except (ValueError, IndexError):
+        return False
+    return (0.299 * red + 0.587 * green + 0.114 * blue) < 110
+
+
 def _visual_figure(spec, theme):
     """Create one allowlisted figure; callers cannot inject arbitrary Plotly objects."""
     if not isinstance(spec, dict) or len(json.dumps(spec, allow_nan=False)) > 64 * 1024:
@@ -67,23 +89,29 @@ def _visual_figure(spec, theme):
     heading_font = max(32, round(18 * pixels_per_point))
     caption_font = max(16, round(9 * pixels_per_point))
     line_width = max(24, int((width - 180) / (caption_font * 0.6)))
-    caption_lines = [line for part in caption_parts for line in textwrap.wrap(part, line_width)]
+    # One compact paragraph, not a line per field: the chart needs the height more than the caption does.
+    caption_lines = textwrap.wrap('  \u2022  '.join(caption_parts), line_width)
     caption = '<br>'.join(caption_lines)
     title_width = max(24, int((width - 120) / (heading_font * 0.6)))
-    title_lines = textwrap.wrap(title, title_width)
+    show_title = spec.get('show_title', True)
+    if not isinstance(show_title, bool):
+        raise ValueError('show_title must be true or false')
+    title_lines = textwrap.wrap(title, title_width) if show_title else []
     if len(title_lines) > 2:
         raise ValueError('Use a shorter title for the selected chart width')
     title = '<br>'.join(title_lines)
     traces = []
+    below_axis = round(axis_font * 2.8)  # room for the category labels under the plot
     layout = {'width': width, 'height': height, 'paper_bgcolor': theme['background'],
               'plot_bgcolor': theme['background'],
               'font': {'family': theme['font'], 'size': axis_font, 'color': theme['foreground']},
-              'title': {'text': title, 'x': 0.02, 'font': {'size': heading_font, 'family': theme['font']}},
-              'margin': {'l': 120, 'r': 90, 't': max(95, heading_font * (len(title_lines) + 1)), 'b': round(axis_font * 4.5) + round(caption_font * 1.4) * len(caption_lines) + 30},
-              'colorway': theme['colors'], 'showlegend': False,
+              'title': {'text': title, 'x': 0.02, 'xanchor': 'left', 'y': 0.98, 'yanchor': 'top', 'yref': 'container',
+                        'font': {'size': heading_font, 'family': theme['font']}},
+              'margin': {'l': 120, 'r': 90, 't': max(95, heading_font * (len(title_lines) + 1)) if show_title else 40, 'b': below_axis + round(caption_font * 1.4) * len(caption_lines) + 24},
+              'colorway': _colorway(theme, 1), 'showlegend': False,
               'xaxis': {'automargin': True, 'zeroline': False},
               'yaxis': {'automargin': True, 'zeroline': False},
-              'annotations': [{'text': caption, 'xref': 'paper', 'yref': 'paper', 'x': 0, 'y': 0, 'yshift': -round(axis_font * 4.5),
+              'annotations': [{'text': caption, 'xref': 'paper', 'yref': 'paper', 'x': 0, 'y': 0, 'yshift': -below_axis,
                                'xanchor': 'left', 'yanchor': 'top', 'showarrow': False,
                                'align': 'left', 'font': {'size': caption_font}}] if caption else []}
     if layout['margin']['b'] > height * 0.45:
@@ -104,6 +132,22 @@ def _visual_figure(spec, theme):
             raise ValueError('axis_type must be category or date')
         if axis_type == 'date':
             categories = [_visual_date(x) for x in raw_categories]
+        colors = _colorway(theme, len(series))
+        layout['colorway'] = colors
+        bar_mode = spec.get('bar_mode', 'group')
+        if bar_mode not in ('group', 'stack'):
+            raise ValueError('bar_mode must be group or stack')
+        label_values = len(series) * len(categories) <= 48
+        # The tallest bar or stack, so only segments big enough to hold a label get one.
+        grid_values = []
+        for series_item in series:
+            if not isinstance(series_item, dict):
+                raise ValueError('Each series must be an object')
+            row = series_item.get('values', [])
+            if not isinstance(row, list) or len(row) != len(categories):
+                raise ValueError('Every series must align with all categories')
+            grid_values.append([_visual_number(v, unit=unit) or 0 for v in row])
+        peak = max([sum(col) for col in zip(*grid_values)] if bar_mode == 'stack' else [v for row in grid_values for v in row] or [0]) or 1
         for i, series_item in enumerate(series):
             if not isinstance(series_item, dict):
                 raise ValueError('Each series must be an object')
@@ -115,27 +159,61 @@ def _visual_figure(spec, theme):
                 raise ValueError('Case counts must be nonnegative integers')
             trace = {'type': 'bar' if kind == 'bar' else 'scatter',
                      'name': _visual_text(series_item.get('name', 'Series')),
-                     'marker': {'color': theme['colors'][i % len(theme['colors'])]},
+                     'marker': {'color': colors[i % len(colors)]},
                      'x': values if kind == 'bar' and orientation == 'horizontal' else categories,
                      'y': categories if kind == 'bar' and orientation == 'horizontal' else values}
             if kind == 'bar':
                 trace['orientation'] = 'h' if orientation == 'horizontal' else 'v'
+                if label_values:
+                    # Value labels, blank for zero and missing so empty groups stay clean.
+                    shown = (lambda v: v and abs(v) / peak >= 0.06) if bar_mode == 'stack' else (lambda v: v)
+                    trace.update(text=[('%g' % v) if shown(v) else '' for v in values], cliponaxis=False, textangle=0,
+                                 textfont={'size': max(14, round(axis_font * 0.7))},
+                                 textposition='inside' if bar_mode == 'stack' else 'outside')
+                    if bar_mode == 'stack':
+                        trace['insidetextanchor'] = 'middle'
             else:
                 trace.update(mode='lines+markers', connectgaps=False,
-                             line={'color': theme['colors'][i % len(theme['colors'])], 'width': 4})
+                             line={'color': colors[i % len(colors)], 'width': 4})
             traces.append(trace)
         layout['showlegend'] = len(series) > 1
+        if len(series) > 1:
+            legend_font = max(18, round(axis_font * 0.85))
+            names = [str(item.get('name', 'Series')) for item in series]
+            room = width - layout['margin']['l'] - layout['margin']['r']
+            rows, used = 1, 0
+            for name in names:
+                needed = len(name) * legend_font * 0.58 + legend_font * 2.6
+                if used and used + needed > room:
+                    rows, used = rows + 1, 0
+                used += needed
+            if rows <= 2:
+                # Few series: a horizontal legend above the plot.
+                layout['legend'] = {'orientation': 'h', 'x': 0, 'xanchor': 'left', 'y': 1.0, 'yanchor': 'bottom',
+                                    'font': {'size': legend_font}, 'traceorder': 'normal'}
+                layout['margin']['t'] += round(rows * legend_font * 1.55) + 14
+            else:
+                # Many series: a legend down the side keeps the plot tall instead of burying it under legend rows.
+                legend_width = max(len(name) for name in names) * legend_font * 0.58 + legend_font * 2.6
+                if legend_width > width * 0.42 or len(names) * legend_font * 1.6 > height * 0.9:
+                    raise ValueError('Too many or too long series names for this chart size; shorten them or use fewer series')
+                layout['legend'] = {'orientation': 'v', 'x': 1.01, 'xanchor': 'left', 'y': 1.0, 'yanchor': 'top',
+                                    'font': {'size': legend_font}, 'traceorder': 'normal'}
+                layout['margin']['r'] += round(legend_width)
         if kind == 'bar':
-            bar_mode = spec.get('bar_mode', 'group')
-            if bar_mode not in ('group', 'stack'):
-                raise ValueError('bar_mode must be group or stack')
+            layout['bargap'] = 0.18
+            layout['bargroupgap'] = 0.04
+            layout['uniformtext'] = {'minsize': 11, 'mode': 'hide'}
             if orientation == 'horizontal' and len(categories) * axis_font * 1.5 > height - layout['margin']['t'] - layout['margin']['b']:
                 raise ValueError('Too many categories to remain legible in this slide picture; use a supplied aggregate top-N/Other or larger compatible dimensions')
             layout['barmode'] = bar_mode
             count_axis = 'xaxis' if orientation == 'horizontal' else 'yaxis'
             category_axis = 'yaxis' if orientation == 'horizontal' else 'xaxis'
-            layout[count_axis].update(title={'text': unit}, rangemode='tozero')
-            layout[category_axis].update(type='category', categoryorder='array', categoryarray=categories)
+            grid = '#4E444E' if _is_dark(theme['background']) else '#E6E2E4'
+            layout[count_axis].update(title={'text': unit}, rangemode='tozero', gridcolor=grid)
+            layout[category_axis].update(type='category', categoryorder='array', categoryarray=categories, showgrid=False)
+            if orientation == 'vertical' and len(categories) <= 12:
+                layout[category_axis]['tickangle'] = 0
             if orientation == 'horizontal':
                 layout[category_axis]['autorange'] = 'reversed'
         else:

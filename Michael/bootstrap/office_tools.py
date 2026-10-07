@@ -447,7 +447,7 @@ def configured_starter(source=None, check=False):
         raise ValueError('Declare the approved starter SHA-256 in branding/powerpoint.json')
     raw = load_starter_template(Path(source).expanduser().resolve() if source else target)
     if raw is None:
-        raise ValueError('Required PowerPoint starter missing; supply provision.py --starter-file PATH (see docs/POWERPOINT_TEMPLATE.md)')
+        raise ValueError('Required PowerPoint starter missing; supply provision.py --starter-file PATH (see docs/tools.md)')
     if hashlib.sha256(raw).hexdigest() != digest:
         raise ValueError('PowerPoint starter does not match branding/powerpoint.json SHA-256')
     if source and not check:
@@ -483,7 +483,7 @@ def get_tool(base, token, tool_id):
 def bundle_delivery_source(source):
     """Embed shared owners so each DB tool remains independently distributable."""
     import re
-    for module in ('office_delivery', 'visual_figure'):
+    for module in ('workspace_delivery', 'visual_figure'):
         pattern = rf'^from {module} import [^\n]+$'
         if re.search(pattern, source, re.MULTILINE):
             helper = (MICHAEL_DIR / 'tools' / (module + '.py')).read_text()

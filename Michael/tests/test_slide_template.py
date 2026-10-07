@@ -81,6 +81,56 @@ class TemplateTests(unittest.TestCase):
             self.assertNotIn(b'SOURCE INSTRUCTIONS MUST NOT SHIP', all_xml)
             self.assertNotIn(b'PRIVATE STARTER NOTES', all_xml)
 
+    def test_column_headings_are_distinct_unbulleted_template_paragraphs(self):
+        # Add a synthetic three-column layout; no corporate template is needed.
+        from copy import deepcopy
+        from pptx.util import Inches
+        template = Presentation(BytesIO(self.raw))
+        layout = template.slide_layouts[9]
+        layout.name = 'Three Column Slide'
+        layout.shapes._spTree.getparent().replace(layout.shapes._spTree,
+                                deepcopy(template.slide_layouts[3].shapes._spTree))
+        layout.__dict__.pop('shapes', None)
+        third = deepcopy(layout.placeholders[2]._element)
+        third.find('.//' + qn('p:cNvPr')).set('id', '99')
+        third.find('.//' + qn('p:ph')).set('idx', '3')
+        layout.shapes._spTree.insert_element_before(third, 'p:extLst')
+        for i, ph in enumerate(list(layout.placeholders)[1:]):
+            ph.left = Inches(0.5 + i * 3)
+            ph.width = Inches(2.75)
+        raw = BytesIO(); template.save(raw)
+        self.tool.valves.starter_template_b64 = base64.b64encode(raw.getvalue()).decode()
+        for count, alias in ((2, 'two_column_text'), (3, 'three_column_text')):
+            with self.subTest(columns=count):
+                columns = [{'heading': f'Section {i}',
+                            'bullets': ['First point', {'text': 'Nested point', 'level': 1}]}
+                           for i in range(count)]
+                prs, _ = self.build([{'layout': alias, 'title': 'Sections', 'columns': columns}])
+                bodies = [ph for ph in prs.slides[0].placeholders
+                          if slides._placeholder_kind(ph) not in ('title', 'center_title', 'slide_number', 'date', 'footer')]
+                self.assertEqual(len(bodies), count)
+                for i, ph in enumerate(bodies):
+                    heading, first, nested = ph.text_frame.paragraphs
+                    self.assertEqual(heading.text, f'Section {i}')
+                    self.assertIsNotNone(heading._p.find('./' + qn('a:pPr') + '/' + qn('a:buNone')))
+                    self.assertTrue(heading.font.bold)
+                    self.assertEqual(heading._p.get_or_add_pPr().get('marL'), '0')
+                    self.assertEqual(heading._p.get_or_add_pPr().get('indent'), '0')
+                    self.assertEqual(first.text, 'First point')
+                    self.assertEqual(nested.level, 1)
+                    self.assertIsNone(first._p.find('.//' + qn('a:buNone')))
+                    self.assertIsNone(first.font.bold)
+                    # Font family, size and colour still inherit the real template.
+                    self.assertIsNone(heading.runs[0].font.name)
+                    self.assertIsNone(heading.runs[0].font.size)
+                    self.assertIsNone(first.runs[0].font.name)
+        prs, _ = self.build([{'layout': 'two_column_text', 'columns': [
+            {'bullets': ['Plain point']}, {'heading': '', 'bullets': ['Other point']}]}])
+        for ph in list(prs.slides[0].placeholders)[1:]:
+            paragraph = ph.text_frame.paragraphs[0]
+            self.assertIsNone(paragraph.font.bold)
+            self.assertIsNone(paragraph._p.find('.//' + qn('a:buNone')))
+
     def test_catalog_and_explicit_placeholder_text(self):
         catalog = json.loads(asyncio.run(self.tool.get_slide_layouts()))
         self.assertEqual(catalog['mode'], 'template')
@@ -159,7 +209,7 @@ class TemplateTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'byte limit'):
                     asyncio.run(slides._attachment_image('id', {'id': 'owner'}))
 
-    def test_terminal_workspace_round_trip_and_path_restrictions(self):
+    def test_terminal_image_reads_and_path_restrictions(self):
         import contextlib
         import io
         import os
@@ -168,19 +218,15 @@ class TemplateTests(unittest.TestCase):
             original = b'x' * (110 * 1024)
             (home / 'workspace/assets/image.png').write_bytes(original)
             async def local_call(context, payload):
-                code = office_delivery._TERMINAL_FILE_PROGRAM.replace('PAYLOAD', repr(base64.b64encode(json.dumps(payload).encode()).decode()))
+                code = workspace_delivery._TERMINAL_FILE_PROGRAM.replace('PAYLOAD', repr(base64.b64encode(json.dumps(payload).encode()).decode()))
                 code = code.replace("os.path.expanduser('~')", repr(str(home)))
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out):exec(compile(code, '<terminal fixture>', 'exec'), {})
                 return json.loads(out.getvalue())
-            import office_delivery
-            with patch.object(office_delivery, '_terminal_file_call', local_call):
+            import workspace_delivery
+            with patch.object(workspace_delivery, '_terminal_file_call', local_call):
                 read = asyncio.run(slides._terminal_image(None, 'assets/image.png'))
                 self.assertEqual(read, original)
-                saved = asyncio.run(slides._terminal_save(None, original, 'ignored.pptx'))
-                self.assertEqual((home / saved.removeprefix('~/')).read_bytes(), original)
-                again = asyncio.run(slides._terminal_save(None, original, 'ignored.pptx'))
-                self.assertNotEqual(saved, again)
                 for invalid in ('/etc/passwd', '../secret', 'assets/../../secret', 'assets\\secret'):
                     with self.assertRaises(ValueError):asyncio.run(slides._terminal_image(None, invalid))
                 (home / 'workspace/assets/link.png').symlink_to(home / 'workspace/assets/image.png')
@@ -314,6 +360,144 @@ class TemplateTests(unittest.TestCase):
         prs, _ = self.build([{'layout': 'cover', 'title': 'Legacy'}])
         self.assertEqual(len(prs.slides), 1)
 
+
+
+def table_shapes(slide):
+    return [shape for shape in slide.shapes if getattr(shape, 'has_table', False) and shape.has_table]
+
+
+class DeckQualityTests(unittest.TestCase):
+    """What the deck in the failing conversation looked like, and what must now happen instead."""
+    MONTHS = ['2026-07', '2026-08', '2026-09', '2026-10']
+
+    def setUp(self):
+        self.tool = slides.Tools()
+        self.tool.valves.starter_template_b64 = base64.b64encode(starter()).decode()
+
+    def build(self, items):
+        spec = {'title': 'Deck', 'slides': items}
+        report = spec.setdefault('_layout_warnings', [])
+        slides._promote_text_tables(items, report)
+        data, _ = self.tool._build(spec)
+        return Presentation(BytesIO(data)), data, spec['_layout_warnings']
+
+    @staticmethod
+    def png(width, height, color='navy'):
+        from PIL import Image
+        out = BytesIO(); Image.new('RGB', (width, height), color).save(out, 'PNG'); return out.getvalue()
+
+    # -- tables written as text --------------------------------------------------------------
+
+    def test_pipe_separated_text_becomes_a_real_table(self):
+        rows = 'Series | Jul | Aug\nM Series | 1 | 9\nChromebooks | 1 | 0'
+        prs, _, report = self.build([{'template_layout': 'Title and Content', 'title': 'Counts', 'body': rows}])
+        (table,) = table_shapes(prs.slides[0])
+        self.assertEqual([c.text for c in table.table.rows[0].cells], ['Series', 'Jul', 'Aug'])
+        self.assertEqual(table.table.cell(2, 0).text, 'Chromebooks')
+        self.assertFalse(any('|' in shape.text_frame.text for shape in prs.slides[0].shapes if shape.has_text_frame))
+        self.assertTrue(any('real table' in line for line in report))
+
+    def test_markdown_tables_and_bulleted_rows_are_promoted_too(self):
+        prs, _, _ = self.build([{'layout': 'title_body', 'title': 'MD', 'body': '| A | B |\n|---|:--:|\n| 1 | 2 |'}])
+        self.assertEqual([c.text for c in table_shapes(prs.slides[0])[0].table.rows[0].cells], ['A', 'B'])
+        prs, _, _ = self.build([{'template_layout': 'Title and Content', 'title': 'B', 'bullets': ['A | B', '1 | 2']}])
+        self.assertEqual(len(table_shapes(prs.slides[0])), 1)
+
+    def test_ordinary_text_with_a_pipe_is_left_alone(self):
+        for body in ('Either this | or that', 'one | two\nthree', 'a | b\nc | d | e', '| only\n| one column', 'Plain sentence.\nAnother.'):
+            self.assertIsNone(slides._text_table(body), body)
+
+    # -- native charts -----------------------------------------------------------------------
+
+    def chart_spec(self, count, **extra):
+        return {'template_layout': 'Chart Slide', 'title': 'Chart', 'chart_type': 'bar', 'labels': self.MONTHS,
+                'datasets': [{'label': f'Series {i}', 'data': [(i + j) % 5 + 1 for j in range(4)]} for i in range(count)], **extra}
+
+    def test_ten_series_are_stacked_with_distinct_colours(self):
+        prs, _, report = self.build([self.chart_spec(10)])
+        chart = next(s.chart for s in prs.slides[0].shapes if getattr(s, 'has_chart', False) and s.has_chart)
+        self.assertEqual(str(chart.chart_type).split()[0], 'COLUMN_STACKED')
+        colours = [str(series.format.fill.fore_color.rgb) for series in chart.series]
+        self.assertEqual(len(set(colours)), 10)
+        self.assertTrue(any('Stacked a chart with 10 series' in line for line in report))
+
+    def test_a_few_series_stay_side_by_side_and_can_be_forced_either_way(self):
+        chart = lambda items: next(s.chart for s in self.build(items)[0].slides[0].shapes if getattr(s, 'has_chart', False) and s.has_chart)
+        self.assertEqual(str(chart([self.chart_spec(3)]).chart_type).split()[0], 'COLUMN_CLUSTERED')
+        self.assertEqual(str(chart([self.chart_spec(3, stacked=True)]).chart_type).split()[0], 'COLUMN_STACKED')
+        self.assertEqual(str(chart([self.chart_spec(8, stacked=False)]).chart_type).split()[0], 'COLUMN_CLUSTERED')
+
+    def test_labels_hide_zeros_and_thin_stacked_segments_are_deleted_not_blanked(self):
+        prs, data, _ = self.build([self.chart_spec(8)])
+        with zipfile.ZipFile(BytesIO(data)) as z:
+            xml = next(z.read(n).decode() for n in z.namelist() if n.startswith('ppt/charts/chart') and n.endswith('.xml'))
+        self.assertIn('formatCode="0;-0;;"', xml)
+        self.assertIn('<c:delete val="1"/>', xml)
+        self.assertRegex(xml, r'<c:legendPos(?: val="r")?/>')  # right is the schema default, so it may be omitted
+
+    # -- an exported chart image -------------------------------------------------------------
+
+    def test_an_exported_chart_is_shown_whole_inside_the_chart_area(self):
+        wide = self.png(1600, 686)
+        prs, _, _ = self.build([{'template_layout': 'Chart Slide', 'title': 'Exported', '_img': wide}])
+        slide = prs.slides[0]
+        pictures = [s for s in slide.shapes if s.shape_type == 13]
+        self.assertEqual(len(pictures), 1)
+        self.assertFalse(any(getattr(s, 'is_placeholder', False) and s.placeholder_format.type is not None and 'CHART' in str(s.placeholder_format.type) for s in slide.shapes))
+        picture = pictures[0]
+        self.assertAlmostEqual(picture.width / picture.height, 1600 / 686, delta=0.02)
+        self.assertEqual((picture.crop_left, picture.crop_right, picture.crop_top, picture.crop_bottom), (0, 0, 0, 0))
+        area = [p for p in slide.slide_layout.placeholders if 'CHART' in str(p.placeholder_format.type)][0]
+        self.assertGreaterEqual(picture.left, area.left); self.assertGreaterEqual(picture.top, area.top)
+        self.assertLessEqual(picture.left + picture.width, area.left + area.width + 1)
+        self.assertLessEqual(picture.top + picture.height, area.top + area.height + 1)
+
+    def test_a_tall_image_is_fitted_not_cropped_or_stretched(self):
+        prs, _, _ = self.build([{'template_layout': 'Chart Slide', 'title': 'Tall', '_img': self.png(600, 1200)}])
+        picture = [s for s in prs.slides[0].shapes if s.shape_type == 13][0]
+        self.assertAlmostEqual(picture.width / picture.height, 0.5, delta=0.01)
+
+    def test_a_picture_layout_crops_by_default_and_can_contain(self):
+        crop = lambda fit: (lambda p: (p.crop_left + p.crop_right + p.crop_top + p.crop_bottom))(
+            [s for s in self.build([{'template_layout': 'Title w/Image', 'title': 'T', '_img': self.png(1600, 400), **fit}])[0].slides[0].shapes if s.shape_type in (13, 14) and hasattr(s, 'crop_left')][0])
+        self.assertGreater(crop({}), 0)
+        self.assertEqual(crop({'image_fit': 'contain'}), 0)
+
+    def test_an_image_on_a_layout_with_no_place_for_it_is_still_refused(self):
+        with self.assertRaisesRegex(ValueError, 'picture placeholder'):
+            self.build([{'template_layout': 'Title and Content', 'title': 'No picture area', 'image_url': 'https://example.com/x.png'}])
+
+    # -- tables are sized by content ---------------------------------------------------------
+
+    def test_a_table_with_a_wide_text_column_stays_on_one_slide(self):
+        names = ['M Series desktops (ThinkCentre)', 'Lenovo Chromebooks Series', 'L Series laptops (ThinkPad)', '500 Series laptops (ideapad)',
+                 'P Series workstations (ThinkStation)', 'T Series laptops (ThinkPad)', 'X Series laptops (ThinkPad)', 'P Series laptops (ThinkPad)',
+                 '300 Series laptops (ideapad)', 'Edge Series laptops (ThinkPad)']
+        rows = [[n, 1, 9, 19, 1, 30] for n in names]
+        prs, _, _ = self.build([{'template_layout': 'Title and Content', 'title': 'Counts', 'headers': ['Product Series', 'Jul', 'Aug', 'Sep', 'Oct', 'Total'], 'rows': rows}])
+        self.assertEqual(len(prs.slides), 1)
+        table = table_shapes(prs.slides[0])[0].table
+        widths = [c.width for c in table.columns]
+        self.assertGreater(widths[0], 3 * widths[1])
+        self.assertEqual(len(table.rows), 11)
+
+    def test_a_long_table_still_continues_onto_more_slides(self):
+        rows = [[f'Item {i}', 'Detailed synthetic explanation ' * 8, str(i)] for i in range(40)]
+        prs, _, report = self.build([{'template_layout': 'Title and Content', 'title': 'Long', 'headers': ['Item', 'Details', 'Count'], 'rows': rows}])
+        self.assertGreater(len(prs.slides), 1)
+        self.assertTrue(any('continued across' in line for line in report))
+
+    # -- the file itself ---------------------------------------------------------------------
+
+    def test_the_package_keeps_default_namespaces_so_strict_readers_can_open_it(self):
+        _, data, _ = self.build([{'layout': 'cover', 'title': 'T', 'subtitle': 'S'}])
+        with zipfile.ZipFile(BytesIO(data)) as z:
+            for name in ('[Content_Types].xml', '_rels/.rels'):
+                xml = z.read(name).decode()
+                self.assertNotIn('ns0:', xml, name)
+                self.assertRegex(xml, r'<(Types|Relationships) xmlns="http', name)
+            self.assertFalse([n for n in z.namelist() if n.startswith('docProps/thumbnail')])
+            self.assertEqual(z.namelist()[0], '[Content_Types].xml')
 
 if __name__ == '__main__':
     unittest.main()

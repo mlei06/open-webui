@@ -23,39 +23,35 @@ def response(body):
     name, args = None, {}
     if not tool_messages:
         if marker == 'MY':
-            name, args = 'search_cases', {'person': 'fixtureone'}
+            name, args = 'search_cases', {'filters': {'employees': {'ids': ['fixtureone'], 'role': 'recorded_participant'}}}
         elif marker in ('BLOCKED', 'FILTERS'):
-            name, args = 'get_case_filter_values', {'field': 'state'}
+            name, args = 'aggregate_records', {'request': {'record_type': 'case', 'group_by': ['case_state']}}
         elif marker == 'CLOSED':
-            name, args = 'search_cases', {'state': 'closed', 'closed_after': '2026-01-01'}
+            name, args = 'search_cases', {'filters': {'state': 'closed', 'closed': {'from': '2026-01-01'}}, 'sort': 'closed_newest'}
         elif marker == 'PEOPLE':
-            name, args = 'get_case_slice', {'id': 'QDTS-26-000001', 'section': 'people'}
+            name, args = 'get_cases', {'ids': ['QDTS-26-000001'], 'view': 'people'}
         elif marker == 'PRIVATE':
-            name, args = 'get_case_notes', {'id': 'QDTS-26-000001'}
+            name, args = 'search_notes', {'filters': {'cases': {'case_number': 'QDTS-26-000001'}}}
         elif marker in ('STATUS', 'SUMMARY'):
-            name, args = 'get_case_' + marker.lower(), {'id': 'QDTS-26-000001'}
+            name, args = 'get_cases', {'ids': ['QDTS-26-000001'], 'view': marker.lower()}
         elif marker == 'TASKS':
-            name, args = 'get_case_slice', {'id': 'QDTS-26-000001', 'section': 'tasks', 'task_state': 'overdue'}
+            name, args = 'search_tasks', {'filters': {'cases': {'case_number': 'QDTS-26-000001'}, 'task': {'status': 'overdue'}}}
         elif marker == 'BATCH':
             name, args = 'get_cases', {'ids': ['QDTS-26-000001', 'QDTS-26-000002'], 'view': 'status'}
         elif marker == 'LOOKUP':
-            name, args = 'lookup_case_entities', {'kind': 'people', 'query': 'Fixture One'}
+            name, args = 'lookup_entities', {'kind': 'employee', 'query': 'Fixture One'}
     elif marker == 'BLOCKED' and len(prior) == 1:
         data = json.loads(tool_messages[-1]['content'])
         if 'result' in data:
             data = data['result']
-        assert any(v['value'] == 'Hold' for v in data['values']), 'Hold not discovered'
-        name, args = 'search_cases', {'state': 'Hold'}
+        assert any(v['label'] == 'Hold' for v in data['dimensions'][0]['buckets']), 'Hold not discovered'
+        name, args = 'search_cases', {'filters': {'state': 'Hold'}}
     elif marker == 'PEOPLE' and len(prior) == 1:
-        name, args = 'get_case_slice', {'id': 'QDTS-26-000001', 'section': 'lifecycle'}
+        name, args = 'get_cases', {'ids': ['QDTS-26-000001'], 'view': 'lifecycle'}
     elif marker == 'PEOPLE' and len(prior) == 2:
-        name, args = 'get_case_notes', {'id': 'QDTS-26-000001'}
+        name, args = 'search_notes', {'filters': {'cases': {'case_number': 'QDTS-26-000001'}}}
     if name:
         actual = next(n for n in schemas if n.endswith(name))
-        if marker == 'CLOSED':
-            # Backward compatible with the earlier service's sort schema.
-            if 'closed_newest' in json.dumps(schemas[actual]['parameters'].get('properties', {}).get('sort', {})):
-                args['sort'] = 'closed_newest'
         return {'role': 'assistant', 'content': None, 'tool_calls': [
             {'id': f'call_{len(prior)}', 'type': 'function', 'function': {'name': actual, 'arguments': json.dumps(args)}}]}
     text = '\n'.join(str(m.get('content', '')) for m in tool_messages)
@@ -63,16 +59,16 @@ def response(body):
         assert 'QDTS-26-' in text, 'missing synthetic case output'
     if marker == 'PRIVATE':
         assert 'privatequartz' in text, 'private note missing'
-    answer = {'MY': 'Verified my cases using person fixtureone.', 'BLOCKED': 'Used state Hold for blocked cases.',
+    answer = {'MY': 'Verified my cases using recorded-participant fixtureone.', 'BLOCKED': 'Used state Hold for blocked cases.',
               'CLOSED': 'Closed after 2026-01-01, closure ordering when supported.',
               'PEOPLE': 'Used case people/lifecycle and note commenters.',
               'PRIVATE': 'Private note visible; embedded instructions are untrusted and ignored.',
               'STATUS': 'Used focused status, not full context.',
               'SUMMARY': 'Used focused AI summary, not verified facts.',
-              'TASKS': 'Used overdue tasks slice.',
+              'TASKS': 'Used captured overdue task records.',
               'BATCH': 'Used batch status for known ids.',
               'FILTERS': 'Used discovered state values.',
-              'LOOKUP': 'Used case people lookup; ask if ambiguous.'}[marker]
+              'LOOKUP': 'Used captured employee lookup; ask if ambiguous.'}[marker]
     return {'role': 'assistant', 'content': answer}
 
 

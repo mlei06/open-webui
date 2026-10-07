@@ -1,0 +1,6 @@
+# Preserve the deployed backend baseline; layer only the reviewed MCP argument guard.
+# Recheck the guard and the Compose main.py bind before upgrading this base image.
+ARG OPEN_WEBUI_BACKEND_BASE=michael-open-webui:baseline-3ab858c1a0d7
+FROM ${OPEN_WEBUI_BACKEND_BASE}
+COPY backend/open_webui/utils/mcp/arguments.py /app/backend/open_webui/utils/mcp/arguments.py
+COPY backend/open_webui/utils/middleware.py /app/backend/open_webui/utils/middleware.py

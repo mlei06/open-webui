@@ -269,16 +269,22 @@ def merge_knowledge(live, want):
     return [*want, *[k for k in live or [] if k.get('id') not in wanted]]
 
 
-def knowledge_ok(live, want):
+def knowledge_ok(live, want, managed=frozenset()):
+    """Every wanted reference is present as declared, and no managed base the preset no longer declares is attached."""
     by_id = {k.get('id'): k for k in live or []}
-    return all(by_id.get(k['id']) == k for k in want)
+    wanted = {k['id'] for k in want}
+    return all(by_id.get(k['id']) == k for k in want) and not (set(by_id) & set(managed) - wanted)
 
 
-def matches(current, want):
-    """True when the live model already carries everything the declaration sets."""
+def matches(current, want, managed=frozenset()):
+    """True when the live model already carries everything the declaration sets.
+
+    managed: ids of the knowledge bases this repository provisions. A preset that does not declare one of them
+    must not hold it (a user's own attachments are never in this set, so they are kept).
+    """
     meta, params = current.get('meta') or {}, current.get('params') or {}
     return (
-        knowledge_ok(meta.get('knowledge'), want['meta'].get('knowledge') or [])
+        knowledge_ok(meta.get('knowledge'), want['meta'].get('knowledge') or [], managed)
         and icon_ok(meta, want['meta'])
         and current.get('base_model_id') == want['base_model_id']
         and current.get('name') == want['name']
@@ -316,19 +322,20 @@ def register_base_model(base, token, base_model):
     )
 
 
-def knowledge_meta(meta, want):
+def knowledge_meta(meta, want, managed=frozenset()):
     wanted = want['meta'].get('knowledge') or []
-    return {'knowledge': merge_knowledge(meta.get('knowledge'), wanted)} if wanted else {}
+    merged = [k for k in merge_knowledge(meta.get('knowledge'), wanted) if k.get('id') in {w['id'] for w in wanted} or k.get('id') not in managed]
+    return {'knowledge': merged} if merged else {'knowledge': []} if meta.get('knowledge') else {}
 
 
-def upsert(base, token, want, apply):
+def upsert(base, token, want, apply, managed=frozenset()):
     """Return 'created', 'updated' or 'unchanged' (and write it when apply is true)."""
     current = get_model(base, token, want['id'])
     if current is None:
         if apply:
             call(base, 'POST', '/api/v1/models/create', token, want)
         return 'created'
-    if matches(current, want):
+    if matches(current, want, managed):
         return 'unchanged'
     if apply:
         meta, params = current.get('meta') or {}, current.get('params') or {}
@@ -337,7 +344,7 @@ def upsert(base, token, want, apply):
             'POST',
             '/api/v1/models/model/update',
             token,
-            {**want, 'meta': {**meta, **want['meta'], **knowledge_meta(meta, want)}, 'params': {**params, **want['params']}},
+            {**want, 'meta': {**meta, **want['meta'], **knowledge_meta(meta, want, managed)}, 'params': {**params, **want['params']}},
         )
     return 'updated'
 
@@ -577,8 +584,9 @@ def run(argv=None):
             else:
                 kbs[name] = kb
 
+        managed = {kb['id'] for kb in live_kbs if kb.get('name') in {n for q in presets for n in q['knowledge_bases']}}
         for p in presets:
-            what = upsert(base, token, desired_model(p, base_model, doc['filter_ids'], kbs), not args.check)
+            what = upsert(base, token, desired_model(p, base_model, doc['filter_ids'], kbs), not args.check, managed)
             if what == 'unchanged':
                 report(True, f'{p["id"]}: preset already up to date')
             elif args.check:

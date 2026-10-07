@@ -114,25 +114,21 @@ class GuardTests(unittest.TestCase):
 
 
 class DeclarationTests(unittest.TestCase):
-    def test_fixture_provider_tolerates_old_service_sort_schema(self):
-        for sorts in (['created_newest'], ['created_newest', 'closed_newest']):
-            response = cases_model.response({'messages': [
-                {'role': 'system', 'content': 'id: fixtureone untrusted closed_newest'},
-                {'role': 'user', 'content': 'TEST_CLOSED'}],
-                'tools': [{'function': {'name': 'qdts_search_cases', 'parameters': {
-                    'properties': {'sort': {'anyOf': [{'enum': sorts}]}}}}}]})
-            args = json.loads(response['tool_calls'][0]['function']['arguments'])
-            self.assertEqual(args['state'], 'closed')
-            self.assertEqual(args['closed_after'], '2026-01-01')
-            self.assertEqual(args.get('sort'), 'closed_newest' if 'closed_newest' in sorts else None)
+    def test_fixture_provider_uses_v2_closed_bounds(self):
+        response = cases_model.response({'messages': [
+            {'role': 'system', 'content': 'id: fixtureone untrusted'},
+            {'role': 'user', 'content': 'TEST_CLOSED'}],
+            'tools': [{'function': {'name': 'qdts_search_cases', 'parameters': {}}}]})
+        args = json.loads(response['tool_calls'][0]['function']['arguments'])
+        self.assertEqual(args, {'filters': {'state': 'closed', 'closed': {'from': '2026-01-01'}}, 'sort': 'closed_newest'})
 
     def test_shared_bearer_no_identity_no_writes(self):
         server = next(s for s in mcp_servers.load_servers() if s['id'] == 'qdts')
         connection = mcp_servers.desired_connection(server, mcp_servers.resolve(server, {'QDTS_MCP_API_KEY': 'synthetic'}), {})
-        self.assertEqual(connection['url'], 'http://qdts-cases:8000/mcp')
+        self.assertEqual(connection['url'], 'http://qdts-cases:8000/mcp/v2')
         self.assertEqual(connection['auth_type'], 'bearer')
         self.assertIsNone(connection['headers'])
-        self.assertEqual(set(server['tools']), {'search_cases','aggregate_cases','search_product','search_team','search_customer','get_case','get_case_notes','get_case_summary','get_case_status','get_case_slice','get_cases','get_case_filter_values','lookup_case_entities'})
+        self.assertEqual(set(server['tools']), {'lookup_entities','get_entity','search_cases','search_notes','search_tasks','aggregate_records','get_cases','get_records'})
         self.assertEqual(connection['config']['function_name_filter_list'], ','.join(server['tools']))
         self.assertEqual(server['tools'], server['function_name_filter_list'])
         self.assertEqual(server['access'], {'type': 'public'})
@@ -147,7 +143,7 @@ class DeclarationTests(unittest.TestCase):
             self.assertEqual(model['params']['function_calling'], 'native')
             self.assertIn('user_context', model['meta']['filterIds'])
         ca = presets.desired_model(by_id['case-assistant'], doc['base_model'], doc['filter_ids'])
-        self.assertEqual(ca['meta']['toolIds'], ['server:mcp:qdts', 'visuals_toolkit_v4'])
+        self.assertEqual(ca['meta']['toolIds'], ['server:mcp:qdts', 'visuals_toolkit_v4', 'workspace_files'])
         self.assertEqual(by_id['case-assistant']['knowledge_bases'], [])
         self.assertFalse(ca['meta']['capabilities']['web_search'])
         self.assertFalse(ca['meta']['builtinTools']['knowledge'])
@@ -159,15 +155,15 @@ class DeclarationTests(unittest.TestCase):
         names = next(s for s in mcp_servers.load_servers() if s['id'] == 'qdts')['tools']
         tools = [{'function': {'name': 'qdts_' + name, 'parameters': {}}} for name in names]
         cases = {
-            'STATUS': ('get_case_status', {'id': 'QDTS-26-000001'}),
-            'SUMMARY': ('get_case_summary', {'id': 'QDTS-26-000001'}),
-            'TASKS': ('get_case_slice', {'id': 'QDTS-26-000001', 'section': 'tasks', 'task_state': 'overdue'}),
+            'STATUS': ('get_cases', {'ids': ['QDTS-26-000001'], 'view': 'status'}),
+            'SUMMARY': ('get_cases', {'ids': ['QDTS-26-000001'], 'view': 'summary'}),
+            'TASKS': ('search_tasks', {'filters': {'cases': {'case_number': 'QDTS-26-000001'}, 'task': {'status': 'overdue'}}}),
             'BATCH': ('get_cases', {'ids': ['QDTS-26-000001', 'QDTS-26-000002'], 'view': 'status'}),
-            'FILTERS': ('get_case_filter_values', {'field': 'state'}),
-            'LOOKUP': ('lookup_case_entities', {'kind': 'people', 'query': 'Fixture One'}),
-            'BLOCKED': ('get_case_filter_values', {'field': 'state'}),
-            'PEOPLE': ('get_case_slice', {'id': 'QDTS-26-000001', 'section': 'people'}),
-            'PRIVATE': ('get_case_notes', {'id': 'QDTS-26-000001'}),
+            'FILTERS': ('aggregate_records', {'request': {'record_type': 'case', 'group_by': ['case_state']}}),
+            'LOOKUP': ('lookup_entities', {'kind': 'employee', 'query': 'Fixture One'}),
+            'BLOCKED': ('aggregate_records', {'request': {'record_type': 'case', 'group_by': ['case_state']}}),
+            'PEOPLE': ('get_cases', {'ids': ['QDTS-26-000001'], 'view': 'people'}),
+            'PRIVATE': ('search_notes', {'filters': {'cases': {'case_number': 'QDTS-26-000001'}}}),
         }
         for marker, (name, args) in cases.items():
             with self.subTest(marker=marker):
@@ -178,11 +174,11 @@ class DeclarationTests(unittest.TestCase):
                 self.assertEqual(call['name'], 'qdts_' + name)
                 self.assertEqual(json.loads(call['arguments']), args)
                 if marker == 'BLOCKED':
-                    messages += [response, {'role': 'tool', 'content': json.dumps({'values': [{'value': 'Hold', 'count': 1}]})}]
+                    messages += [response, {'role': 'tool', 'content': json.dumps({'dimensions': [{'buckets': [{'label': 'Hold'}]}]})}]
                     call = cases_model.response({'messages': messages, 'tools': tools})['tool_calls'][0]['function']
                     self.assertEqual(call['name'], 'qdts_search_cases')
-                    self.assertEqual(json.loads(call['arguments']), {'state': 'Hold'})
-                    messages[-1]['content'] = json.dumps({'values': [{'value': 'Open', 'count': 1}]})
+                    self.assertEqual(json.loads(call['arguments']), {'filters': {'state': 'Hold'}})
+                    messages[-1]['content'] = json.dumps({'dimensions': [{'buckets': [{'label': 'Open'}]}]})
                     with self.assertRaisesRegex(AssertionError, 'Hold not discovered'):
                         cases_model.response({'messages': messages, 'tools': tools})
 

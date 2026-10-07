@@ -12,7 +12,9 @@ import asyncio
 import copy
 import json
 import logging
+import re
 import time
+from urllib.parse import quote
 from typing import Literal
 from uuid import uuid4
 
@@ -95,6 +97,17 @@ async def _resolve_agent(request: Request, user, agent_id: str, allowed: set[str
     return model, ''
 
 
+def _terminal_for(model: dict, metadata: dict) -> str | None:
+    """The parent's selected terminal, handed only to presets that explicitly enable the capability.
+
+    Open WebUI treats a missing terminal capability as enabled, so the check here requires `true`.
+    All agents of one user share that user's home, so they read and write the same workspace.
+    """
+    capabilities = ((model.get('info') or {}).get('meta') or {}).get('capabilities') or {}
+    terminal_id = (metadata or {}).get('terminal_id')
+    return terminal_id if terminal_id and capabilities.get('terminal') is True else None
+
+
 def _select_files(parent_files: list[dict], file_ids: list[str] | None) -> tuple[list[dict], list[str]]:
     """Only files already attached to the parent chat can be handed to a sub-agent."""
     if not file_ids:
@@ -136,6 +149,67 @@ def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else f'{text[:limit]}\n\n[output truncated]'
 
 
+def _terminal_link(terminal_id: str | None, workspace_path: str | None, name: str | None = None) -> str | None:
+    """Markdown link to a terminal file through Open WebUI's authenticated proxy.
+
+    Paths are relative to the caller's home, which the terminal resolves itself. The file API only
+    serves the caller's own home and the read-only shared area (see docs/terminal.md), and the
+    caller's identity comes from the browser session, so the link cannot reach anyone else's files.
+    """
+    if not terminal_id or not workspace_path or not isinstance(workspace_path, str):
+        return None
+    relative = workspace_path[2:] if workspace_path.startswith('~/') else workspace_path
+    if not relative or relative.startswith('/') or '..' in relative.split('/') or '\\' in relative or '\x00' in relative:
+        return None
+    label = (name or relative.rsplit('/', 1)[-1]).replace('[', '(').replace(']', ')')
+    return f'[{label}](/api/v1/terminals/{quote(terminal_id, safe="")}/files/view?path={quote(relative, safe="")})'
+
+
+# The only shape of terminal URL accepted from a sub-agent's tool result: our proxy route, one path
+# parameter made of percent-encoded characters. Anything else is ignored and the link is rebuilt.
+_TERMINAL_URL = re.compile(r'^/api/v1/terminals/[A-Za-z0-9._~-]+/files/view\?path=[A-Za-z0-9%._~-]+$')
+
+
+def _json_objects(value):
+    """Yield every dict found in tool output, which may be a JSON string or a list of text parts."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return
+    if isinstance(value, dict):
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from _json_objects(item.get('text') if isinstance(item, dict) and 'text' in item else item)
+
+
+def _produced_files(message: dict, terminal_id: str | None) -> list[dict]:
+    """Files a sub-agent delivered, taken from its tool results rather than from its prose."""
+    found: dict[tuple, dict] = {}
+    for item in message.get('output') or []:
+        if not isinstance(item, dict) or item.get('type') != 'function_call_output':
+            continue
+        for data in _json_objects(item.get('output')):
+            name = data.get('file_name') or data.get('name')
+            path = data.get('workspace_path') if data.get('terminal_saved', True) else None
+            url = data.get('download_url')
+            if not (path or url) or not name:
+                continue
+            link = _terminal_link(terminal_id, path, name)
+            given = data.get('terminal_download_url')
+            if path and isinstance(given, str) and _TERMINAL_URL.match(given):
+                label = str(name).replace('[', '(').replace(']', ')')
+                link = f'[{label}]({given})'
+            found[(name, path, url)] = {
+                'name': name,
+                'workspace_path': path,
+                'terminal_link': link,
+                'download_url': url,
+            }
+    return list(found.values())
+
+
 async def _run_agent(
     *,
     request: Request,
@@ -172,7 +246,14 @@ async def _run_agent(
         'models': [agent_id],
         **({'files': files} if files else {}),
     }
-    result = {'agent_id': agent_id, 'subagent_chat_id': chat_id, 'status': 'error', 'summary': '', 'error': None}
+    result = {
+        'agent_id': agent_id,
+        'subagent_chat_id': chat_id,
+        'status': 'error',
+        'summary': '',
+        'error': None,
+        'files': [],
+    }
 
     try:
         chat = await Chats.insert_new_chat(
@@ -242,8 +323,9 @@ async def _run_agent(
             'files': files,
             'variables': copy.deepcopy(parent_variables),
         }
-        if defaults['terminal_id']:
-            form_data['terminal_id'] = defaults['terminal_id']
+        terminal_id = step.get('terminal_id') or defaults['terminal_id']
+        if terminal_id:
+            form_data['terminal_id'] = terminal_id
         await request.app.state.CHAT_COMPLETION_HANDLER(child_request, form_data, user=user)
 
     async def mark_failed(content: str) -> None:
@@ -284,6 +366,7 @@ async def _run_agent(
                 error=(error.get('content') if isinstance(error, dict) else error) if error else None,
             )
             result['summary'] = _truncate(_summary_of(message), max_output)
+            result['files'] = _produced_files(message, step.get('terminal_id'))
             if not result['summary'] and not error:
                 result['summary'] = 'Sub-agent produced no output.'
         return result
@@ -368,6 +451,22 @@ async def _run_job(
 # ---------------------------------------------------------------------------
 
 
+def _file_lines(files: list[dict]) -> list[str]:
+    if not files:
+        return []
+    lines = ['Files produced (give the user these links exactly as written, keeping every leading slash):']
+    for file in files:
+        parts = [f'- {file["name"]}']
+        if file.get('workspace_path'):
+            parts.append(f'terminal path: {file["workspace_path"]}')
+        if file.get('terminal_link'):
+            parts.append(f'download from the terminal: {file["terminal_link"]}')
+        if file.get('download_url'):
+            parts.append(f'Open WebUI download: [{file["name"]}]({file["download_url"]})')
+        lines.append(' | '.join(parts))
+    return lines
+
+
 def _result_lines(results: list[dict]) -> list[str]:
     lines: list[str] = []
     for index, item in enumerate(results, start=1):
@@ -376,6 +475,7 @@ def _result_lines(results: list[dict]) -> list[str]:
             lines.append(f'Subagent chat: {item["subagent_chat_id"]}')
         if item['status'] == 'completed':
             lines.append(item['summary'] or 'Completed without a final summary.')
+            lines.extend(_file_lines(item.get('files') or []))
         else:
             lines.append(f'Did not complete: {item.get("error") or item["status"]}')
             if item.get('summary'):
@@ -383,7 +483,7 @@ def _result_lines(results: list[dict]) -> list[str]:
     return lines
 
 
-async def _post_completion(
+async def _resume_parent(
     *,
     request: Request,
     user,
@@ -394,14 +494,23 @@ async def _post_completion(
     execution: str,
     results: list[dict],
     duration: float,
+    max_wait: int,
 ) -> None:
-    """Insert the aggregated result into the parent chat as an internal message and resume the
-    parent on its OWN model (parent_run['model_id'])."""
+    """Add the aggregated result to the parent chat and resume the parent on its OWN model.
+
+    Open WebUI's own resume helper updates `history.currentId` but not the chat row's
+    `current_message_id`, which the UI prefers on reload. The UI reloads the instant the
+    helper emits chat:reload, inside that window, so it landed on the old message and the
+    resumed turn streamed into a branch the user never saw. Here both pointers are written in
+    one commit, before the reload is emitted. The result is attached to the chat's current
+    leaf, so a result that arrives after the user has moved on continues their conversation.
+    """
     from open_webui.internal.db import get_async_db
     from open_webui.models.chat_messages import ChatMessages
     from open_webui.models.chats import Chat
     from open_webui.tasks import has_active_tasks
-    from open_webui.utils.subagents import _parent_locks, process_pending_internal_messages
+    from open_webui.utils.misc import get_message_list
+    from open_webui.utils.subagents import _build_request, _parent_locks
     from sqlalchemy import select
 
     chat_ids = [item['subagent_chat_id'] for item in results if item.get('subagent_chat_id')]
@@ -423,59 +532,121 @@ async def _post_completion(
         **({'subagent_chat_id': chat_ids[0]} if chat_ids else {}),
         **({'subagent_chat_ids': chat_ids} if len(chat_ids) > 1 else {}),
     }
-    pending_id = str(uuid4())
-    pending = {
-        'id': pending_id,
-        'parentId': None,
-        'childrenIds': [],
-        'role': 'user',
-        'content': content,
-        'model': parent_run['model_id'],
-        'meta': meta,
-        'timestamp': int(time.time()),
-    }
-
+    model_id = parent_run['model_id']
+    redis = request.app.state.redis
     lock = _parent_locks.setdefault(parent_chat_id, asyncio.Lock())
-    async with lock:
-        async with get_async_db() as db:
-            stmt = select(Chat).where(Chat.id == parent_chat_id, Chat.user_id == user.id)
-            if db.bind.dialect.name == 'postgresql':
-                stmt = stmt.with_for_update()
-            row = (await db.execute(stmt)).scalar_one_or_none()
-            if not row:
+    deadline = time.time() + max_wait
+
+    while True:
+        while await has_active_tasks(redis, parent_chat_id):
+            if time.time() > deadline:
+                log.warning('Gave up resuming chat %s for %s: it stayed busy', parent_chat_id, job_id)
                 return
-            updated = copy.deepcopy(row.chat or {})
-            history = updated.setdefault('history', {})
-            messages = history.setdefault('messages', {})
-            finished = [m for m in messages.values() if m.get('role') == 'assistant' and m.get('done') is not False]
-            attach_to = (
-                max(finished, key=lambda m: m.get('timestamp', 0)).get('id') if finished else parent_message_id
+            await asyncio.sleep(0.25)
+
+        async with lock:
+            if await has_active_tasks(redis, parent_chat_id):
+                continue
+
+            async with get_async_db() as db:
+                stmt = select(Chat).where(Chat.id == parent_chat_id, Chat.user_id == user.id)
+                if db.bind.dialect.name == 'postgresql':
+                    stmt = stmt.with_for_update()
+                row = (await db.execute(stmt)).scalar_one_or_none()
+                if not row:
+                    return
+                history = copy.deepcopy((row.chat or {}).get('history') or {})
+                messages = history.setdefault('messages', {})
+
+                leaf = messages.get(row.current_message_id or history.get('currentId') or '')
+                if leaf and leaf.get('role') == 'assistant' and leaf.get('done') is not False:
+                    attach_to = leaf['id']
+                else:
+                    finished = [
+                        m for m in messages.values() if m.get('role') == 'assistant' and m.get('done') is not False
+                    ]
+                    attach_to = (
+                        max(finished, key=lambda m: m.get('timestamp', 0))['id'] if finished else parent_message_id
+                    )
+
+                message_list = get_message_list(messages, attach_to) if attach_to else []
+                now = int(time.time())
+                user_message_id, assistant_message_id = str(uuid4()), str(uuid4())
+                user_message = {
+                    'id': user_message_id,
+                    'parentId': attach_to,
+                    'childrenIds': [assistant_message_id],
+                    'role': 'user',
+                    'content': content,
+                    'model': model_id,
+                    'meta': meta,
+                    'timestamp': now,
+                }
+                assistant_message = {
+                    'id': assistant_message_id,
+                    'parentId': user_message_id,
+                    'childrenIds': [],
+                    'role': 'assistant',
+                    'content': '',
+                    'done': False,
+                    'model': model_id,
+                    'timestamp': now,
+                }
+                if attach_to and attach_to in messages:
+                    children = messages[attach_to].setdefault('childrenIds', [])
+                    if user_message_id not in children:
+                        children.append(user_message_id)
+                messages[user_message_id] = user_message
+                messages[assistant_message_id] = assistant_message
+                history['currentId'] = assistant_message_id
+                row.chat = {**(row.chat or {}), 'history': history}
+                row.current_message_id = assistant_message_id
+                row.updated_at = now
+                await db.commit()
+
+            await ChatMessages.upsert_message(
+                message_id=user_message_id, chat_id=parent_chat_id, user_id=user.id, data=user_message
             )
-            pending['parentId'] = attach_to
-            if await has_active_tasks(request.app.state.redis, parent_chat_id):
-                pending['meta']['status'] = 'pending'
-            messages[pending_id] = pending
-            if attach_to and attach_to in messages:
-                children = messages[attach_to].setdefault('childrenIds', [])
-                if pending_id not in children:
-                    children.append(pending_id)
-            row.chat = {**(row.chat or {}), **updated, 'history': history}
-            row.updated_at = int(time.time())
-            await db.commit()
-        await ChatMessages.upsert_message(
-            message_id=pending_id, chat_id=parent_chat_id, user_id=user.id, data=pending
-        )
+            await ChatMessages.upsert_message(
+                message_id=assistant_message_id, chat_id=parent_chat_id, user_id=user.id, data=assistant_message
+            )
 
-    if pending['meta'].get('status') == 'pending':
-        from open_webui.socket.main import sio
+            from open_webui.socket.main import sio
 
-        await sio.emit(
-            'events',
-            {'chat_id': parent_chat_id, 'message_id': pending_id, 'data': {'type': 'chat:reload'}},
-            room=f'user:{user.id}',
-        )
-    if not await has_active_tasks(request.app.state.redis, parent_chat_id):
-        await process_pending_internal_messages(request, parent_chat_id, user.id, parent_run)
+            await sio.emit(
+                'events',
+                {'chat_id': parent_chat_id, 'message_id': assistant_message_id, 'data': {'type': 'chat:reload'}},
+                room=f'user:{user.id}',
+            )
+
+            system_prompt = parent_run.get('system_prompt')
+            form_data = {
+                'model': model_id,
+                'messages': [
+                    *([{'role': 'system', 'content': system_prompt}] if system_prompt else []),
+                    *message_list,
+                    {'role': 'user', 'content': content},
+                ],
+                'stream': True,
+                'chat_id': parent_chat_id,
+                'id': assistant_message_id,
+                'parent_id': attach_to,
+                'user_message': user_message,
+                'session_id': parent_run.get('session_id') or f'subagent-result:{parent_chat_id}',
+                'background_tasks': {},
+                'tool_ids': parent_run.get('tool_ids') or [],
+                'skill_ids': parent_run.get('skill_ids') or [],
+                'filter_ids': parent_run.get('filter_ids') or [],
+                'features': parent_run.get('features') or {},
+                'files': parent_run.get('files') or [],
+                'variables': parent_run.get('variables') or {},
+            }
+            if parent_run.get('terminal_id'):
+                form_data['terminal_id'] = parent_run['terminal_id']
+            await request.app.state.CHAT_COMPLETION_HANDLER(
+                _build_request(request, user.id, internal=False), form_data, user=user
+            )
+            return
 
 
 # ---------------------------------------------------------------------------
@@ -500,6 +671,9 @@ class Tools:
         agent_timeout_seconds: int = Field(default=900, description='Timeout per sub-agent.')
         max_result_chars: int = Field(default=30000, description='Result size cap per sub-agent.')
         max_task_chars: int = Field(default=16000, description='Maximum characters in one task plus context.')
+        resume_wait_seconds: int = Field(
+            default=3600, description='How long a finished job waits for a busy parent chat before giving up.'
+        )
 
     def __init__(self):
         self.valves = self.Valves()
@@ -625,6 +799,7 @@ class Tools:
                     'files': files,
                     'chat_id': str(uuid4()),
                     'defaults': await _model_defaults((model.get('info') or {}).get('meta') or {}),
+                    'terminal_id': _terminal_for(model, metadata),
                 }
             )
 
@@ -709,7 +884,7 @@ class Tools:
             finally:
                 _active_jobs.discard(job_id)
             try:
-                await _post_completion(
+                await _resume_parent(
                     request=__request__,
                     user=user,
                     parent_chat_id=parent_chat_id,
@@ -719,6 +894,7 @@ class Tools:
                     execution=execution,
                     results=results,
                     duration=time.time() - started,
+                    max_wait=max(60, self.valves.resume_wait_seconds),
                 )
             except Exception:
                 log.exception('Failed to report delegation job %s to chat %s', job_id, parent_chat_id)
@@ -738,8 +914,11 @@ class Tools:
                 'job_id': job_id,
                 'execution': execution,
                 'agents': [{'agent_id': step['agent_id'], 'subagent_chat_id': step['chat_id']} for step in steps],
-                'note': 'Running in the background. Continue with other work; results will arrive as a new '
-                'message in this chat when all agents have finished.',
+                'note': 'Running in the background. Do not poll, wait, set a timer, run get_process_status or any shell '
+                'command (job_id is not a process id), and do not dispatch the same task again. Continue only with work that '
+                'does not need these results; if there is none, answer with one short sentence saying what is running and end '
+                'your turn. The results arrive automatically as a new message in this chat when all agents have finished, and '
+                'you will be resumed.',
             },
             ensure_ascii=False,
         )

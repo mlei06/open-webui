@@ -30,6 +30,7 @@ two things no single script owns: first-run admin creation and the final access 
   9. kb tool       Knowledge Base Manager tool (kb_manager_tool.py)
  10. office tools  slide and Word generator tools (office_tools.py)
  10b. extensions   managed visual/UI extensions and explicit retirements (extensions.py)
+ 10c. skills       the task guides in skills/ (skills.py): qdts, visualization, delegation, ...
  11. knowledge     knowledge bases and their seed files (knowledge_bases.py)
  12. presets       the presets, the Review and send email action, web search, knowledge attachment
                    (presets.py)
@@ -83,6 +84,7 @@ STEPS = [
     ('kbtool', 'Knowledge Base Manager tool', 'kb_manager_tool.py', False, ['--check']),
     ('office', 'Office document generator tools', 'office_tools.py', False, ['--check']),
     ('extensions', 'Managed visual/UI extensions and retired plugins', 'extensions.py', False, ['--check']),
+    ('skills', 'Skills (task guides the presets load on demand)', 'skills.py', False, ['--check']),
     ('knowledge', 'Knowledge bases', 'knowledge_bases.py', False, ['--check']),
     ('presets', 'Presets, action, web search', 'presets.py', False, ['--check']),
     ('branding', 'Lenovo branding', 'branding.py', False, ['--check']),
@@ -309,7 +311,7 @@ def main(argv=None):
             missing = [n for n, p in (('tools/theme_designer_pro.py', MICHAEL_DIR / 'tools' / 'theme_designer_pro.py'), ('runtime/brand/lenovo-logo.svg', MICHAEL_DIR / 'runtime' / 'brand' / 'lenovo-logo.svg')) if not p.is_file()]
             if missing and not (MICHAEL_DIR / 'runtime' / 'brand' / 'lenovo-logo.png').is_file():
                 print(f'== {title}')
-                run.note(step, 'branding not applied, missing ' + ', '.join(missing) + ' (private files kept outside git; see README, Bootstrap: Lenovo branding)')
+                run.note(step, 'branding not applied, missing ' + ', '.join(missing) + ' (private files kept outside git; see docs/branding.md)')
                 continue
         if args.check:
             if check_args is None:

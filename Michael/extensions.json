@@ -16,6 +16,13 @@
       "access_grants": [{"principal_type": "user", "principal_id": "*", "permission": "read"}]
     },
     {
+      "kind": "tools",
+      "id": "workspace_files",
+      "name": "Workspace Files",
+      "file": "tools/workspace_files.py",
+      "access_grants": [{"principal_type": "user", "principal_id": "*", "permission": "read"}]
+    },
+    {
       "kind": "functions",
       "id": "interface_toggles",
       "name": "Interface Toggles",

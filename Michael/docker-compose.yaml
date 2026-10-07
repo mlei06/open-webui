@@ -8,8 +8,10 @@ services:
   open-webui:
     build:
       context: ..
-      dockerfile: Dockerfile
-    image: ${OPEN_WEBUI_IMAGE:-ghcr.io/open-webui/open-webui:main}
+      dockerfile: Michael/Dockerfile.qdts-backend
+      args:
+        OPEN_WEBUI_BACKEND_BASE: ${OPEN_WEBUI_BACKEND_BASE:-michael-open-webui:baseline-3ab858c1a0d7}
+    image: ${OPEN_WEBUI_IMAGE:-michael-open-webui:qdts-v2}
     env_file:
       - .env
     environment:
@@ -42,7 +44,7 @@ services:
     networks: [default, terminal]
     restart: unless-stopped
 
-  # Native terminal integration; see docs/OPEN_TERMINAL.md. No host ports or mounts.
+  # Native terminal integration; see docs/terminal.md. No host ports or mounts.
   open-terminal:
     build:
       context: ..
@@ -53,8 +55,11 @@ services:
     environment:
       OPEN_TERMINAL_API_KEY: ${OPEN_TERMINAL_API_KEY:?Initialize the private terminal key with bootstrap/init_env.py}
       OPEN_TERMINAL_MULTI_USER: "true"
+      MICHAEL_TERMINAL_SHARED_ROOT: /shared
     volumes:
       - terminal-data:/home
+      # Read-only for everyone, including the file API; filled only by terminal-shared-writer.
+      - terminal-shared:/shared:ro
     networks: [terminal]
     mem_limit: 2g
     cpus: 2
@@ -66,6 +71,18 @@ services:
       start_period: 30s
       retries: 3
     restart: unless-stopped
+
+  # Admin-only writer for the shared read-only area. Not started by default and has no network:
+  #   docker compose --profile admin run --rm --no-deps -v "$PWD/shared-files:/src:ro" \
+  #     terminal-shared-writer 'cp -a /src/. /shared/ && chmod -R a+rX,go-w /shared'
+  terminal-shared-writer:
+    image: ${OPEN_TERMINAL_RENDER_IMAGE:-michael-open-terminal:plotly-7.0.0-kaleido-1.2.0}
+    profiles: [admin]
+    user: root
+    entrypoint: ["/bin/sh", "-c"]
+    network_mode: none
+    volumes:
+      - terminal-shared:/shared
 
   # Employee directory (REST API, UI and MCP server), built from its own source tree.
   # Open WebUI reaches the MCP endpoint at http://employee-directory:8000/mcp over the
@@ -204,6 +221,7 @@ networks:
 
 volumes:
   terminal-data:
+  terminal-shared:
   qdts-cases-data:
   employee-directory-data:
   mail-service-data:

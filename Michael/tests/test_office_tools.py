@@ -187,7 +187,8 @@ class BootstrapTests(unittest.TestCase):
     def test_presets_use_the_declared_tool_ids(self):
         doc = json.loads((HERE / 'models' / 'presets.json').read_text())
         preset = next(p for p in doc['presets'] if p['id'] == 'office-documents')
-        self.assertEqual([r['tool'] for r in preset['tools']], [t['id'] for t in ot.TOOLS])
+        # The two generators, then the shared workspace tool every terminal-enabled preset carries.
+        self.assertEqual([r['tool'] for r in preset['tools']], [t['id'] for t in ot.TOOLS] + ['workspace_files'])
 
     def test_letterhead_lookup_stays_off_the_server_upload_folders(self):
         self.assertFalse(Path(ot.NO_LETTERHEAD_DIRS).exists())
