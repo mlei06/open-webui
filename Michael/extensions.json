@@ -9,6 +9,13 @@
       "access_grants": []
     },
     {
+      "kind": "tools",
+      "id": "delegate_agents",
+      "name": "Delegate Agents",
+      "file": "tools/delegate_subtask.py",
+      "access_grants": [{"principal_type": "user", "principal_id": "*", "permission": "read"}]
+    },
+    {
       "kind": "functions",
       "id": "interface_toggles",
       "name": "Interface Toggles",

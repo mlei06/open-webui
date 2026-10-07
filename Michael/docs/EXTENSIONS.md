@@ -8,6 +8,7 @@ Use `provision.py --only extensions --check` for a read-only comparison or omit
 | ID | Type | Source | Policy |
 |---|---|---|---|
 | `visuals_toolkit_v4` | Workspace tool | `tools/visuals_toolkit_v4.py` | Private; no public grants or automatic preset attachment |
+| `delegate_agents` | Workspace tool | `tools/delegate_subtask.py` | Public read grant; attached to the `lenny` preset by `presets.json`. See [DELEGATE_AGENTS.md](DELEGATE_AGENTS.md) |
 | `interface_toggles` | Event function | `functions/interface_toggles.py` | Active, not a global filter |
 | `collapsed_sidebar_pinned_models` | Event function | `functions/collapsed_sidebar_pinned_models.py` | Active, not a global filter |
 

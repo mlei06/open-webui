@@ -27,7 +27,8 @@
         {"tool": "generate_docx_documents"},
         {"tool": "knowledge_base_manager"},
         {"server": "qdts"},
-        {"server": "path"}
+        {"server": "path"},
+        {"tool": "delegate_agents"}
       ],
       "actions": ["mail_review"],
       "capabilities": {

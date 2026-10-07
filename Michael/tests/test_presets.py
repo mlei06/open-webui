@@ -53,7 +53,8 @@ class DeclarationTests(unittest.TestCase):
         self.assertEqual(
             set(ids['lenny']),
             {'server:mcp:doctranslator', 'document_translator', 'server:mcp:employee_directory', 'server:mcp:mail',
-             'generate_slide_pptx', 'generate_docx_documents', 'knowledge_base_manager', 'server:mcp:qdts', 'server:mcp:path'},  # Lenny has every tool
+             'generate_slide_pptx', 'generate_docx_documents', 'knowledge_base_manager', 'server:mcp:qdts', 'server:mcp:path',
+             'delegate_agents'},  # Lenny has every tool
         )
 
     def test_path_is_scoped_read_only_without_mail_web_files_or_knowledge(self):
@@ -328,7 +329,7 @@ class MatchTests(unittest.TestCase):
             self.assertFalse(p.matches(m, want('lenny')))
 
     def test_missing_refs_notes_unregistered_mail(self):
-        tools = {'document_translator', 'knowledge_base_manager', 'generate_slide_pptx', 'generate_docx_documents'}
+        tools = {'document_translator', 'knowledge_base_manager', 'generate_slide_pptx', 'generate_docx_documents', 'delegate_agents'}
         got = p.missing_refs(PRESETS, FILTERS, {'doctranslator', 'employee_directory', 'qdts', 'path'}, tools, {'user_context'})
         self.assertEqual({(a, c, d) for a, _, c, d in got}, {('lenny', 'mail', False), ('office-agent', 'mail', False)})
         got = p.missing_refs(PRESETS, FILTERS, {'mail'}, set(), set())
