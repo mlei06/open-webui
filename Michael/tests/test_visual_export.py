@@ -289,5 +289,34 @@ class TerminalProgram(unittest.TestCase):
         self.assertLess(len(str(payload)), 1000)
 
 
+class EvidenceDelivery(unittest.IsolatedAsyncioTestCase):
+    async def test_one_preview_export_reference_and_complete_metadata(self):
+        mod = load()
+        tool = mod.Tools()
+        emitter = AsyncMock()
+        uploads = []
+        metadata = {'source': 'Synthetic replica revision 42', 'date_basis': 'open date',
+                    'warnings': ['Final month is partial; not a zero-filled history']}
+        spec = {'kind': 'bar', 'categories': ['One', 'Other'], 'series': [{'name': 'Cases', 'values': [5, None]}], 'metadata': metadata}
+        theme = {'background': '#FFFFFF', 'foreground': '#000000', 'font': 'Arial', 'colors': ['#E1251B'], 'picture_ratio': 2.33, 'picture_width_points': 840}
+        figure, info = mod._visual_figure(spec, theme)
+        import hashlib
+        saved = {'workspace_path': '~/.michael-render/chart.png', 'font': 'Liberation Sans', 'warnings': ['Arial fallback'], 'figure': figure, 'sha256': hashlib.sha256(b'png').hexdigest(), 'size': 3}
+        with fake_open_webui(uploads), patch.dict(sys.modules, {'open_webui.models.tools': types.SimpleNamespace(Tools=types.SimpleNamespace(get_tool_valves_by_id=AsyncMock(return_value={'starter_template_b64': 'fixture'})))}), patch.object(mod, '_render_context', AsyncMock(return_value=(('http://t', {}, {}), False))), patch.object(mod, '_pptx_visual_theme', return_value=theme), patch.object(mod, '_terminal_plotly', AsyncMock(return_value=saved)), patch.object(mod, '_terminal_image', AsyncMock(return_value=b'png')), patch.object(mod, '_terminal_discard', AsyncMock()):
+            response, result = await tool.render_visualization(spec, __user__={'id': 'u1'}, __event_emitter__=emitter)
+        self.assertEqual(result['status'], 'success')
+        self.assertEqual(result['primary_preview'], 'interactive')
+        self.assertEqual(result['artifact_reference']['file_id'], result['file_id'])
+        self.assertEqual(result['source_metadata'], metadata)
+        self.assertEqual(len(uploads), 1)
+        self.assertFalse(any(call.args[0]['type'] == 'files' for call in emitter.await_args_list))
+        self.assertIn('Do not repeat', result['instructions'])
+        page = response.body.decode()
+        self.assertIn('Download chart', page)
+        self.assertIn(result['download_url'], page)
+        self.assertIn(metadata['warnings'][0], page)
+        self.assertIn('target.hidden=true;fallback.hidden=false', page)
+        self.assertIn('source_metadata', page)
+
 if __name__ == '__main__':
     unittest.main()

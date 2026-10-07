@@ -719,28 +719,32 @@ pre.vis{{
 }})();
 </script>"""
 
-    def _evidence_body(self, chart_id, figure, result):
+    def _evidence_body(self, chart_id, figure, result, specification, theme):
         url = result.get('download_url') or result.get('terminal_download_url')
         fallback = ('<img src="' + html.escape(url, quote=True) + '" alt="Chart export" style="width:100%;height:auto">') if url else '<p>Interactive renderer unavailable; export download could not be registered.</p>'
         link = ('<a download href="' + html.escape(url, quote=True) + '">Download chart</a>') if url else '<p>Download unavailable; see warnings.</p>'
         metadata = result['source_metadata']
         details = ''.join('<dt>' + html.escape(str(k).replace('_', ' ')) + '</dt><dd>' + html.escape('; '.join(str(x) for x in v) if isinstance(v, list) else str(v)) + '</dd>' for k, v in metadata.items())
-        return f"""<div class="card"><div id="{chart_id}-fallback">{fallback}</div>
+        variants = {}
+        for width in (600, 800):
+            try:
+                candidate, _ = _visual_figure({**specification, 'width': width, 'height': max(800, figure['layout']['height'])}, theme)
+                candidate['layout']['font']['family'] = result['actual_font']
+                candidate['layout']['title']['font']['family'] = result['actual_font']
+                variants[str(width)] = candidate
+            except ValueError:
+                pass  # Dense explicit slide geometry remains horizontally scrollable.
+        return f"""<div class="card" style="overflow:auto"><div id="{chart_id}-fallback">{fallback}</div>
 <div id="{chart_id}" hidden></div>{link}
 <details><summary>Source, scope and warnings</summary><dl>{details}</dl></details></div>
 <script src="{self._PLOTLY_JS}"></script><script>
 (function(){{
  const target=document.getElementById('{chart_id}'), fallback=document.getElementById('{chart_id}-fallback');
- const figure={_script_json(figure)};
+ const original={_script_json(figure)}, variants={_script_json(variants)};
  function render(){{
-  const w=Math.max(600,target.parentElement.clientWidth);
+  const available=target.parentElement.clientWidth;
+  const figure=variants[available<800?'600':'800'] || original;
   const layout=JSON.parse(JSON.stringify(figure.layout));
-  const ratio=w/layout.width;
-  layout.width=w;layout.height=Math.max(500,Math.round(layout.height*Math.max(0.85,ratio)));
-  // Keep readable font sizes; labels/legend retain their measured export margins.
-  ['l','r'].forEach(k=>layout.margin[k]=Math.round(layout.margin[k]*Math.min(1,ratio)));
-  const annotation=layout.annotations[0];
-  if(annotation){{annotation.x=(24-layout.margin.l)/(w-layout.margin.l-layout.margin.r);}}
   return Plotly.react(target,figure.data,layout,{{displayModeBar:false,responsive:false}});
  }}
  if(typeof Plotly==='undefined')return;
@@ -2410,7 +2414,7 @@ pre.vis{{
             result['artifact_reference'] = {'file_id': result['file_id'], 'sha256': result['sha256'], 'workspace_path': result['workspace_path']}
             figure = saved['figure']
             cid = 'visual-' + uuid.uuid4().hex
-            body = self._evidence_body(cid, figure, result)
+            body = self._evidence_body(cid, figure, result, specification, theme)
             fonts = '''<style>@font-face{font-family:"Liberation Sans";src:url("/static/plotly/LiberationSans-Regular.ttf")}@font-face{font-family:"Liberation Sans";font-weight:700;src:url("/static/plotly/LiberationSans-Bold.ttf")}</style>'''
             # Export registration deliberately emits no second image attachment.
             result['instructions'] = ('One primary interactive preview is returned; its image fallback replaces it only if scripts fail. Do not repeat this chart as a Markdown image or request another preview. Use a plain Markdown download link. '

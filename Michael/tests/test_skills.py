@@ -183,7 +183,7 @@ class MinimalPrompts(unittest.TestCase):
         viz = declared()['visualization']['content']
         self.assertIn('never with Python, matplotlib', viz)
         deck = declared()['powerpoint']['content']
-        for needle in ('never a bare file name', 'never rebuild it with python-pptx', 'native chart', 'never type `•`', 'Section Header_White', 'every new deck', 'layout_adjustments'):
+        for needle in ('never a bare file name', 'never build one from scratch with python-pptx', 'native chart', 'never type `•`', 'Section Header_White', 'every new deck', 'layout_adjustments', 'You CAN edit a deck', 'exact `workspace_path` of the latest result', 'display_file', 'inline: true'):
             self.assertIn(needle, deck, needle)
 
     def test_lenny_offers_to_draft_feedback_to_michael_and_never_sends_it_unprompted(self):

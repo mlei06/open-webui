@@ -5,6 +5,7 @@ No corporate template or office documents are required by these tests.
 """
 import asyncio
 import base64
+import os
 import importlib.util
 from io import BytesIO
 import json
@@ -385,6 +386,35 @@ class TemplateTests(unittest.TestCase):
 
 def table_shapes(slide):
     return [shape for shape in slide.shapes if getattr(shape, 'has_table', False) and shape.has_table]
+
+
+class SkillEditRecipeTests(unittest.TestCase):
+    """The edit recipe in skills/powerpoint/SKILL.md runs as written against a deck made from the template."""
+
+    def test_the_recipe_edits_text_adds_a_chart_slide_moves_and_deletes_and_keeps_the_original(self):
+        import re
+        import tempfile
+        from PIL import Image
+        skill = (Path(__file__).resolve().parent.parent / 'skills' / 'powerpoint' / 'SKILL.md').read_text()
+        code = re.search(r'```python\n(.*?)```', skill, re.S).group(1)
+        with tempfile.TemporaryDirectory() as home:
+            out = Path(home) / 'workspace' / 'output'
+            out.mkdir(parents=True)
+            prs = Presentation(BytesIO(starter()))
+            prs.slides.add_slide(prs.slide_layouts[0]).shapes.title.text = 'Cover'
+            prs.slides.add_slide(prs.slide_layouts[1]).shapes.title.text = 'Summary'
+            prs.save(out / 'deck.pptx')
+            Image.new('RGB', (300, 100), 'red').save(out / 'chart.png')
+            env = {**os.environ, 'HOME': home}
+            with patch.dict(os.environ, env):
+                exec(compile(code, 'skill-recipe', 'exec'), {})
+            edited = Presentation(out / 'deck-v2.pptx')
+            titles = [x.shapes.title.text for x in edited.slides]
+            original = Presentation(out / 'deck.pptx')
+        self.assertEqual(len(original.slides), 3)   # the original file is untouched
+        self.assertEqual(titles, ['New title', 'Weekly note activity', 'Summary'])
+        chart_slide = edited.slides[1]
+        self.assertEqual(sum(sh.shape_type == 13 for sh in chart_slide.shapes), 1)
 
 
 class DeckQualityTests(unittest.TestCase):

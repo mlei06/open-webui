@@ -89,9 +89,12 @@ def _visual_figure(spec, theme):
     axis_font = max(24, round(14 * pixels_per_point))
     heading_font = max(32, round(18 * pixels_per_point))
     caption_font = max(16, round(9 * pixels_per_point))
+    if not slide:
+        axis_font, heading_font, caption_font = 22, 30, 14
     # Full provenance travels in adjacent details and image metadata. The footer keeps
     # a source/period reference and makes the accompanying disclosures explicit.
-    compact = [part for part in caption_parts if part.startswith(('source:', 'period:'))]
+    compact = [part for part in caption_parts if part.startswith(('source:', 'period:', 'coverage:', 'as of:', 'data as of:'))]
+    compact += [_visual_text(w, limit=240) for w in warnings]
     if caption_parts:
         compact.append('Scope, coverage and date basis in details' +
                        ('; %d warning(s) in details' % len(warnings) if warnings else ''))
@@ -279,7 +282,7 @@ def _visual_figure(spec, theme):
         rows = sum(max(1, x.count('<br>') + 1) for x in wrapped)
         if rows * axis_font * 1.25 > height - layout['margin']['t'] - layout['margin']['b']:
             raise ValueError('Category labels need a taller chart or fewer supplied categories')
-    if layout['xaxis'].get('type') == 'category':
+    if layout['xaxis'].get('categoryarray'):
         labels = layout['xaxis']['categoryarray']
         chars = max(6, int((width - layout['margin']['l'] - layout['margin']['r']) / len(labels) / (axis_font * 0.62)))
         wrapped = ['<br>'.join(textwrap.wrap(x, chars)) for x in labels]

@@ -41,7 +41,7 @@ class VisualFigures(unittest.TestCase):
         f,info=self.figure(kind='line',metadata=metadata)
         self.assertEqual(info['metadata'],metadata)
         self.assertFalse(f['data'][0]['connectgaps'])
-        self.assertIn('partial',f['layout']['annotations'][0]['text'])
+        self.assertEqual(f['layout']['meta']['source_metadata'], metadata)
 
     def test_intervals_and_undated(self):
         with self.assertRaises(ValueError): self.figure(kind='timeline',events=[dict(label='No date')])
@@ -52,7 +52,7 @@ class VisualFigures(unittest.TestCase):
 
     def test_physical_slide_legibility_and_grouped_bars(self):
         theme={**THEME,'picture_width_points':420}
-        spec=dict(kind='bar',categories=['A','B'],series=[dict(name='One',values=[1,2]),dict(name='Two',values=[2,3])],bar_mode='stack')
+        spec=dict(kind='bar',picture_layout='Chart Slide',categories=['A','B'],series=[dict(name='One',values=[1,2]),dict(name='Two',values=[2,3])],bar_mode='stack')
         f,_=_visual_figure(spec,theme)
         self.assertEqual(f['layout']['barmode'],'stack')
         self.assertGreaterEqual(f['layout']['font']['size'],40)
@@ -81,7 +81,7 @@ class ExportedChartLayout(unittest.TestCase):
 
     def chart(self, count, **kwargs):
         series = [dict(name=self.NAMES[i], values=[(i + j) % 4 for j in range(4)]) for i in range(count)]
-        spec = dict(kind='bar', categories=self.MONTHS, orientation='vertical', series=series)
+        spec = dict(kind='bar', picture_layout='Chart Slide', categories=self.MONTHS, orientation='vertical', series=series)
         spec.update(kwargs)
         return _visual_figure(spec, self.WIDE)
 
@@ -129,7 +129,10 @@ class ExportedChartLayout(unittest.TestCase):
         metadata = dict(source='QDTS replica', scope='Jul to Oct', coverage='154/158 cases', date_basis='started month', warnings=['Partial months', 'Groups overlap'])
         f, _ = self.chart(2, metadata=metadata)
         caption = f['layout']['annotations'][0]['text']
-        self.assertLessEqual(caption.count('<br>'), 1)
+        self.assertLessEqual(caption.count('<br>'), 2)
+        self.assertEqual(f['layout']['meta']['source_metadata'], metadata)
+        self.assertLess(f['layout']['annotations'][0]['x'], 0)
+        self.assertGreaterEqual(-f['layout']['annotations'][0]['yshift'], 3 * f['layout']['font']['size'])
         self.assertIn('\u2022', caption)
         self.assertIn('source: QDTS replica', caption)
 
