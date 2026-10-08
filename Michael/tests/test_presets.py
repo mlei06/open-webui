@@ -70,7 +70,7 @@ class DeclarationTests(unittest.TestCase):
         self.assertEqual(ids['office-documents'], ['generate_slide_pptx', 'generate_docx_documents', 'workspace_files'])
         self.assertEqual(
             set(ids['lenny']),
-            {'server:mcp:doctranslator', 'document_translator', 'server:mcp:mail', 'generate_slide_pptx', 'visuals_toolkit_v4',
+            {'server:mcp:doctranslator', 'document_translator', 'server:mcp:email', 'generate_slide_pptx', 'visuals_toolkit_v4',
              'generate_docx_documents', 'server:mcp:qdts', 'server:mcp:path', 'delegate_agents', 'workspace_files'},
         )  # Lenny keeps the generators and web search; it delegates heavy or background jobs by instruction
 
@@ -132,7 +132,7 @@ class DeclarationTests(unittest.TestCase):
         for k in BY_ID:
             on = k == 'lenny'
             self.assertEqual(want(k)['meta']['actionIds'], ['mail_review'] if on else [], k)
-            self.assertEqual('server:mcp:mail' in want(k)['meta']['toolIds'], on, k)
+            self.assertEqual('server:mcp:email' in want(k)['meta']['toolIds'], on, k)
 
     def test_mail_action_is_declared_and_loaded(self):
         self.assertEqual([a['id'] for a in DOC['actions']], ['mail_review'])
@@ -302,8 +302,8 @@ class MatchTests(unittest.TestCase):
     def test_missing_refs_notes_unregistered_mail(self):
         tools = {'document_translator', 'knowledge_base_manager', 'generate_slide_pptx', 'generate_docx_documents', 'visuals_toolkit_v4', 'delegate_agents', 'workspace_files'}
         got = p.missing_refs(PRESETS, FILTERS, {'doctranslator', 'employee_directory', 'qdts', 'path'}, tools, {'user_context'})
-        self.assertEqual({(a, c, d) for a, _, c, d in got}, {('lenny', 'mail', False)})
-        got = p.missing_refs(PRESETS, FILTERS, {'mail'}, set(), set())
+        self.assertEqual({(a, c, d) for a, _, c, d in got}, {('lenny', 'email', False)})
+        got = p.missing_refs(PRESETS, FILTERS, {'email'}, set(), set())
         self.assertTrue(any(k == 'filter function' for _, k, _, _ in got))
         self.assertTrue(any(k == 'workspace tool' and not o for _, k, _, o in got))
 
@@ -480,8 +480,12 @@ class FollowUpPromptTests(unittest.TestCase):
         text = p.follow_up_template()
         self.assertIn('{{MESSAGES:END:6}}', text)
         self.assertIn('"follow_ups"', text)
-        for ability in ('case data', 'charts', 'PowerPoint', 'email', 'translate', 'web'):
+        for ability in ('Data crunching', 'Visualization', 'PowerPoint', 'Email', 'Automation', 'Translation', 'Web',
+                        'Send me this every Monday', 'Do not suggest email in every set', 'MUST be a recurring version'):
             self.assertIn(ability, text, ability)
+        self.assertIn("anything about the assistant's own status", text)
+        for role in ('Document Translator', 'Web Searcher', 'Office Documents', 'Case Assistant', 'PATH assistant'):
+            self.assertIn(role, text, role)
         self.assertIn('Draft an email', text)           # email is suggested as a draft, never as an unprompted send
         self.assertNotIn('send an email to', text.lower())
         self.assertLess(len(text), 4500)
@@ -576,7 +580,7 @@ class SkillsAndTerminalTests(unittest.TestCase):
                 load(doc)
 
     def test_missing_skills_and_terminals_are_reported_but_not_when_unknown(self):
-        got = p.missing_refs(PRESETS, FILTERS, {'doctranslator', 'employee_directory', 'qdts', 'path', 'mail'}, {'document_translator', 'knowledge_base_manager', 'generate_slide_pptx', 'generate_docx_documents', 'visuals_toolkit_v4', 'delegate_agents', 'workspace_files'}, {'user_context'}, skills={'qdts'}, terminals=set())
+        got = p.missing_refs(PRESETS, FILTERS, {'doctranslator', 'employee_directory', 'qdts', 'path', 'email'}, {'document_translator', 'knowledge_base_manager', 'generate_slide_pptx', 'generate_docx_documents', 'visuals_toolkit_v4', 'delegate_agents', 'workspace_files'}, {'user_context'}, skills={'qdts'}, terminals=set())
         kinds = {(a, b) for a, b, _, _ in got}
         self.assertIn(('lenny', 'skill'), kinds); self.assertIn(('lenny', 'terminal connection'), kinds)
         self.assertNotIn('skill', {b for a, b, _, _ in p.missing_refs(PRESETS, FILTERS, set(), set(), set())})

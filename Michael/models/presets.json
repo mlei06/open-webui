@@ -22,7 +22,7 @@
       "tools": [
         {"server": "doctranslator"},
         {"tool": "document_translator"},
-        {"server": "mail"},
+        {"server": "email"},
         {"tool": "generate_slide_pptx"},
         {"tool": "visuals_toolkit_v4"},
         {"tool": "generate_docx_documents"},
@@ -48,7 +48,7 @@
       },
       "builtin_tools": ["time", "user_input", "web_search", "files", "memory", "chats", "tasks", "automations"],
       "knowledge_bases": [],
-      "skills": ["qdts", "visualization", "web-search", "document-translation", "powerpoint", "delegation", "mail-drafting", "path-mailroom", "terminal-workspace"],
+      "skills": ["qdts", "visualization", "web-search", "document-translation", "powerpoint", "delegation", "email", "path-mailroom", "terminal-workspace"],
       "terminal_id": "open-terminal",
       "default_features": ["web_search"],
       "params": {}

@@ -55,7 +55,7 @@ Keep each task under about 16,000 characters including context.
 - *"Make a 6-slide deck of last quarter's ThinkPad cases by team."* → first run the QDTS queries and charts yourself (**qdts** and **visualization** skills), then delegate to `office-documents` with the real numbers, the image `workspace_path`s and the slide plan.
 - *"Research competitor X and put it in a deck."* → `sequential`: `web-searcher` first, then `office-documents` receives its findings.
 - *"Compare three vendors"* → three parallel `web-searcher` tasks, one per vendor, then you merge the answers.
-- *"Translate this, then email it to Dana."* → delegate the translation, and when the link arrives use the **mail-drafting** skill with `prepare_email_attachments`.
+- *"Translate this, then email it to Dana."* → delegate the translation, and when the link arrives use the **email** skill with `prepare_email_attachments`.
 
 ## When results arrive
 

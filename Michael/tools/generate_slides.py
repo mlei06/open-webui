@@ -2884,137 +2884,45 @@ class Tools:
         __metadata__: Any = None,
         __request__: Any = None,
     ) -> str:
-        """Create a high-quality NATIVE PowerPoint (.pptx) presentation and
-        return a download link. Use this tool whenever the user asks for slides,
-        a presentation, a deck, a pitch or similar.
+        """Create a native PowerPoint (.pptx) in the Lenovo starter template and return a download link.
+        Use it whenever the user asks for slides, a deck or a presentation. It makes a NEW deck; to change a
+        deck that already exists, edit the saved file in the terminal instead (powerpoint skill) and never
+        regenerate it.
 
-        Open Terminal: select a registered terminal in the chat first. To embed an
-        existing workspace image, set slide.terminal_image_path to a path relative
-        to ~/workspace, e.g. "assets/product.png". Browse with the native terminal
-        file tools first; do not guess paths or image content. No model vision is
-        needed to insert a file. Only raster images are embedded, not arbitrary
-        PDF/Office files. Do not combine terminal_image_path with another image source.
-        When a terminal is selected, generated decks are also saved to
-        ~/workspace/output by default; top-level save_to puts the deck elsewhere in
-        the user's home: a folder ("projects/report", relative to ~/workspace, or
-        "~/folder") or a full path ending in .pptx. Nothing is overwritten. Set top-level terminal_output:false
-        for download only, or true to require a selected terminal. The result is a JSON string with exact download_url, workspace_path,
-        terminal_saved, terminal_download_url and status. Show one download URL per artifact: prefer download_url, otherwise use terminal_download_url only for a verified Terminal copy. Never show both URLs for the same artifact. Keep workspace_path for internal reuse and show it only for an explicit Terminal save/open/edit/reuse request. Preserve exact leading slashes and report partial failures.
+        1. Call get_slide_layouts first. 2. Build every slide with `template_layout` set to an exact name it
+        lists: slides[{template_layout, title, subtitle, body or bullets[], columns:[{heading, bullets[]}],
+        placeholders:{"index": "text" or [strings or {text, level 0-4}]}, headers+rows (table), notes}].
+        Write bullets as plain text: the layout draws the bullet, so never type a bullet character and do not use
+        blank lines. A chapter divider is the "Section Header" layout with title and subtitle. Use `columns`, one
+        per content placeholder. Six short bullets per slide at most. `layout` aliases (cover, title_body, section,
+        chart, ...), theme, eyebrow, chips, number, icons, stats and the other house-style fields belong to the
+        legacy renderer, are ignored when a starter is installed, and are listed in layout_adjustments.
 
-        Charts and tables: a native chart (layout "chart", or template_layout
-        "Chart Slide" with chart_type, labels[] and datasets[]) suits up to five
-        series; more series are stacked automatically. For a dense or styled chart
-        call render_visualization first (it is sized for the Chart Slide), then use
-        template_layout "Chart Slide" with terminal_image_path set to the returned
-        workspace_path: the image is shown whole in the chart area. A table must use
-        headers[] and rows[] (any layout with a content placeholder); never write a
-        table as text with | separators, which renders as bullets with pipe characters.
-        A picture layout fills its frame and crops; add image_fit:"contain" to keep a
-        whole image visible.
+        Charts and tables: a native chart (template_layout "Chart Slide" with chart_type, labels[] and datasets[
+        {label, data}]) suits up to five series (more are stacked). Use it for plain bar, line and pie charts. For
+        a dense or styled chart call render_visualization first, then use template_layout "Chart Slide" with
+        terminal_image_path set to the returned workspace_path (never a bare file name or a /tmp path) and
+        image_fit "contain". A table uses headers[] and rows[] (never text with | separators); long tables continue
+        on more slides with repeated headers, so supply the whole table. Pictures: picture layouts crop to fill (add
+        image_fit "contain" to keep the whole image); use image_file_id of an upload in the conversation, image_url,
+        base64 or terminal_image_path, never an invented id or path, and do not combine image sources. Closing and
+        blank layouts have no editable text: put takeaways and contacts on the slide before.
 
-        First call get_slide_layouts to discover the installed starter. When present,
-        its actual masters, artwork, fonts, colours and layouts are retained. Use
-        slides[{template_layout: "exact name", title, subtitle, body or bullets[],
-        columns:[{heading,bullets:[]}], placeholders:{"index":"text"}, notes}].
-        Optional placeholders maps text indices from get_slide_layouts to strings
-        or arrays of strings/{text,level}; levels 0–4 preserve inherited bullet styles.
-        Alternatively use a supported layout alias plus variant:"light"|"dark".
-        Template aliases: cover, section, title_only, title_body, title_bullets,
-        two_column_text, three_column_text, comparison_two, chart, table,
-        text_image_right, image_left_text_right, image_full_caption, big_idea,
-        quote, blank, closing. Use columns for multi-column layouts; one column
-        per content placeholder. Charts use labels[] and values[] or datasets[].
-        Tables use headers[] and rows[]. Long tables automatically continue onto
-        additional slides with repeated headers; wide tables split into groups
-        retaining their first key column. Supply the complete table, not a smaller
-        sample to satisfy a row limit. Extra column blocks also continue to new
-        slides. Closing text is placed on a content slide before the fixed artwork.
-        Pie/doughnut charts include labels and percentages; more than six categories
-        become a labelled bar chart. Multi-series charts require datasets with
-        label and data, not a matrix in values. Photo layouts accept image_file_id (an actual
-        Open WebUI upload ID owned by the caller), image: {"file_id": "..."},
-        image_url or base64. Use attachment IDs from the conversation, never invent
-        IDs or pass local paths. Images fill native picture placeholders with a
-        centered crop; choose a suitable image layout from get_slide_layouts.
-        omit images unless requested. Closing/blank layouts have no editable text:
-        use the supplied closing artwork without extra title/takeaways/contact.
-        Use another content slide for those. Put unsupported diagrams/KPIs into
-        text/columns or a native chart; the legacy renderer's layouts below apply
-        ONLY when no starter is installed. Template mode ignores visual overrides;
-        do not supply themes, custom fonts, colours or logos. Six short bullets max.
+        Saving: with a terminal selected the deck is also saved to ~/workspace/output (never overwriting); top-level
+        save_to puts it elsewhere in the user's home (a folder such as "projects/report" or "~/folder", or a full
+        path ending .pptx); terminal_output false means download only. The result is JSON with status,
+        download_url, workspace_path, terminal_saved, terminal_download_url, warnings and next_steps. After success
+        call display_file with the workspace_path and inline true to show the slides in the chat, then give the
+        one download URL (download_url, else a verified terminal_download_url, never both). Report partial
+        failures honestly.
 
-        The `content` parameter MUST be a SINGLE JSON string (no text before or
-        after, no markdown fence). Structure:
-
-        {
-          "title": "Presentation title",
-          "subtitle": "Subtitle (optional)",
-          "author": "Author / company (optional)",
-          "theme": "lenovo",            // lenovo (default; auto = lenovo) | midnight |
-                                        // forest | ocean | coral | terracotta |
-                                        // teal | berry | sage | cherry | charcoal | slate
-          "accent": "#E1251B",          // opt: force the accent color
-          "footer": "Footer label",      // opt
-          "slides": [ { "layout": "...", ... }, ... ]
-        }
-
-        WHEN get_slide_layouts reports mode "template" (the normal case here), build every
-        slide with `template_layout` set to an exact name it lists, and only these fields:
-        title, subtitle, body or bullets[], columns[{heading, bullets[]}], placeholders{},
-        headers/rows (table), chart fields, terminal_image_path, notes. Write bullets as
-        plain text: the layout draws the bullet, so never type "•", "-" or "*" and never
-        use blank lines (they are removed). A chapter divider is the "Section Header" layout
-        with title and subtitle. The `layout` aliases, `theme`, eyebrow, chips, number,
-        stats, icons and the list below belong to the legacy house style and are ignored
-        (and reported in layout_adjustments) when a starter template is installed.
-
-        LEGACY house style only (no starter template). Each slide has a `layout` and
-        fields consistent with that layout. Common fields: `title`, `eyebrow`
-        (kicker, e.g. "PART I"), `subtitle`.
-
-        AVAILABLE LAYOUTS and main fields:
-        - "cover":        title, subtitle, author, eyebrow, icon, date, chips[]
-        - "section":      number ("01"), eyebrow, title, lead   (chapter divider)
-        - "title_bullets":title, eyebrow, bullets[] (or points/items)
-        - "title_body":   title, eyebrow, body (paragraphs separated by \n)
-        - "two_column_text"/"comparison_two": left{}, right{} OR columns[];
-              each card: {heading, icon, subtitle, description, points[],
-              highlight:true, badge:"Most chosen"}
-        - "kpi_row":      title, stats[] with {value, label, change}
-        - "timeline_horizontal"/"process_flow": steps[] with {when, title, description}
-        - "icon_list_vertical": items[] with {icon, title, description}
-        - "icon_grid_2x2"/"icon_grid_3"/"pillars": items[] with {icon, title, description}
-        - "chart":        chart_type (bar|line|area|pie|doughnut|radar|stacked_bar),
-              labels[] and values[]  OR  datasets[]{label,data[]};
-              opt. insight[]/insight_title for side text
-        - "funnel"/"pyramid"/"cycle"/"quadrant"/"bullseye": nodes[] with
-              {label, description}; quadrant accepts x_axis/y_axis and points[]
-        - "quote":        quote, author, role
-        - "alert":        title, level (info|tip|warning|danger), body or bullets[]
-        - "table":        headers[], rows[] (lists or list of dicts)
-        - "text_image_right"/"image_left_text_right": title, bullets[]/body,
-              image_hint ("stock query") or image_url or base64
-        - "image_full_caption": title, subtitle, image_hint/image_url
-        - "closing":      title, eyebrow, takeaways[], contact
-
-        DESIGN GUIDELINES (follow them):
-        - "Sandwich" structure: start with "cover", use "section" between macro
-          topics, end with "closing". Alternate layouts: do NOT repeat the same
-          bulleted-list slide back to back.
-        - 3-6 short bullets per slide. Prefer data/numbers: use "kpi_row",
-          "chart", "funnel"/"pyramid" instead of long lists.
-        - Use `eyebrow` to number the parts ("PART I — CONTEXT").
-        - Icons: names like target, rocket, lightbulb, shield, lock, users,
-          trending-up, bar-chart, cloud, cpu, dollar-sign, check-circle, award,
-          layers, scale, workflow, globe, calendar, book-open, settings.
-        - STYLE: decks use the Lenovo house style by default (Segoe UI, dark
-          neutral surfaces, Lenovo red accent, the Lenovo logo on the cover and
-          in every footer). Leave `theme`, `accent`, `palette`, `heading_font`
-          and `body_font` out unless the user explicitly asks for another look.
-        - 10-18 slides for a full deck; do not generate walls of text.
-
-        Returns a [TOOL_RESULT ...] line with the markdown link to show the user
-        so they can download the .pptx.
+        The `content` parameter is ONE JSON string, with no text before or after and no markdown fence:
+        {"title": "...", "subtitle": "...", "author": "...", "slides": [ ... ]}. Leave theme, accent, palette and
+        fonts out. Legacy renderer only (no starter installed): each slide has a `layout` from cover, section,
+        title_bullets, title_body, two_column_text, comparison_two, kpi_row, timeline_horizontal, process_flow,
+        icon_list_vertical, icon_grid_2x2, icon_grid_3, pillars, chart, funnel, pyramid, cycle, quadrant, bullseye,
+        quote, alert, table, text_image_right, image_left_text_right, image_full_caption or closing, with the
+        fields named after the layout (for example bullets[], steps[], stats[], items[], nodes[]).
 
         :param content: The presentation specification as a JSON string.
         :param save_to: Where in the user's home to save the deck instead of ~/workspace/output: a folder ("projects/report" under ~/workspace, or "~/Documents/board-pack") or a full path ending in .pptx. Use this instead of copying the file afterwards with the shell. Needs a selected Open Terminal.

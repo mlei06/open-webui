@@ -93,11 +93,20 @@ def _visual_figure(spec, theme):
         axis_font, heading_font, caption_font = 22, 30, 14
     # Full provenance travels in adjacent details and image metadata. The footer keeps
     # a source/period reference and makes the accompanying disclosures explicit.
-    compact = [part for part in caption_parts if part.startswith(('source:', 'period:', 'coverage:', 'as of:', 'data as of:'))]
-    compact += [_visual_text(w, limit=240) for w in warnings]
-    if caption_parts:
-        compact.append('Scope, coverage and date basis in details' +
-                       ('; %d warning(s) in details' % len(warnings) if warnings else ''))
+    compact = [part for part in caption_parts if part.startswith(('source:', 'data as of:'))]
+    warning_text = ' '.join(warnings).lower()
+    period_text = str(metadata.get('period', '')).lower()
+    flags = []
+    if 'partial' in warning_text or 'partial' in period_text:
+        flags.append('Partial period')
+    if 'overlap' in warning_text:
+        flags.append('Overlapping participation')
+    if warnings:
+        flags.append('%d coverage warning(s); full details/export provenance' % len(warnings))
+    if flags:
+        compact.append('; '.join(flags))
+    elif caption_parts:
+        compact.append('Full scope/date basis in details/export provenance')
     line_width = max(24, int((width - 96) / (caption_font * 0.62)))
     caption_lines = textwrap.wrap('  •  '.join(compact), line_width)
     caption = '<br>'.join(caption_lines)
@@ -110,7 +119,7 @@ def _visual_figure(spec, theme):
         raise ValueError('Use a shorter title for the selected chart width')
     title = '<br>'.join(title_lines)
     traces = []
-    below_axis = round(axis_font * 3.6)  # tick labels and axis title have their own band
+    below_axis = round(axis_font * 5.2)  # tick labels and axis title have their own band
     layout = {'width': width, 'height': height, 'paper_bgcolor': theme['background'],
               'plot_bgcolor': theme['background'],
               'font': {'family': theme['font'], 'size': axis_font, 'color': theme['foreground']},
@@ -196,8 +205,22 @@ def _visual_figure(spec, theme):
                 if used and used + needed > room:
                     rows, used = rows + 1, 0
                 used += needed
-            if rows <= 2:
-                # Few series: a horizontal legend above the plot.
+            if rows <= 2 or len(series) <= 3:
+                # Few series: wrap long legend names into readable cells above the plot.
+                legend_chars = max(12, int(room / min(3, len(series)) / (legend_font * 0.62)) - 4)
+                legend_lines = 1
+                for trace, name in zip(traces, names):
+                    lines = textwrap.wrap(html.unescape(name), legend_chars, break_long_words=False, break_on_hyphens=False)
+                    trace['name'] = '<br>'.join(html.escape(line) for line in lines)
+                    legend_lines = max(legend_lines, len(lines))
+                rows, used = 1, 0
+                for trace in traces:
+                    needed = max(len(html.unescape(line)) for line in trace['name'].split('<br>')) * legend_font * 0.58 + legend_font * 2.6
+                    if used and used + needed > room:
+                        rows, used = rows + 1, 0
+                    used += needed
+                rows *= legend_lines
+
                 layout['legend'] = {'orientation': 'h', 'x': 0, 'xanchor': 'left', 'y': 1.0, 'yanchor': 'bottom',
                                     'font': {'size': legend_font}, 'traceorder': 'normal'}
                 layout['margin']['t'] += round(rows * legend_font * 1.55) + 14

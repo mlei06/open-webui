@@ -91,4 +91,4 @@ After you generate OR edit any deck or Word document, call the terminal's `displ
 
 The result has `status`, `download_url`, `workspace_path`, `terminal_saved`, `terminal_download_url` and `warnings`. Show **one** URL per file: `download_url` if present, else `terminal_download_url` when the terminal copy is verified; never both. Keep `workspace_path` internal unless asked. Lead with the link, say what the file contains, list placeholders and assumptions, and report partial success honestly. Do not paste the document into chat. Never claim a file exists without a returned link. On failure, say what went wrong and a useful next step; do not retry blindly.
 
-To attach the file to an email, the parent uses `prepare_email_attachments` (see the **mail-drafting** skill).
+To attach the file to an email, the parent uses `prepare_email_attachments` (see the **email** skill).

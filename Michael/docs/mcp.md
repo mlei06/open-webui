@@ -19,7 +19,7 @@ Contents: [Short version](#short-version) · [How Open WebUI handles tool server
   edited in Admin Settings > External Tools or through the admin API.
 - `mcp/mcp.json` declares that list. `python3 Michael/bootstrap/mcp_servers.py` makes Open WebUI match it and checks
   each server answers and lists its tools. It is the **only** thing that registers servers.
-- Declared today: `doctranslator`, `employee_directory`, `mail`, `qdts`, `path`, and a disabled admin-only
+- Declared today: `doctranslator`, `employee_directory`, `email`, `qdts`, `path`, and a disabled admin-only
   `employee_directory_write`.
 
 ## How Open WebUI handles tool servers
@@ -129,7 +129,7 @@ Not in v1 because Open WebUI has no field: per-server timeouts, OAuth auth, forw
 |---|---|---|---|---|---|
 | `doctranslator` | `translation_capabilities`, `get_translation_status`, `cancel_translation` | `TRANSLATOR_GATEWAY_URL` (required) | bearer `TRANSLATOR_API_KEY` | public | yes |
 | `employee_directory` | `search_employees`, `get_employee`, `get_direct_reports`, `get_management_chain` | `EMPLOYEE_DIRECTORY_MCP_URL` (`http://employee-directory:8000/mcp`) | bearer with `EMPLOYEE_MCP_API_KEY` only if set | public | yes |
-| `mail` | `create_draft`, `update_draft`, `get_draft`, `list_drafts`, `discard_draft`, and `send_draft` when `MAIL_MCP_ALLOW_SEND` is on | `MAIL_MCP_URL` (`http://mail-service:8000/mcp`) | bearer `MAIL_MCP_API_KEY`; headers `X-User-Email`, `X-Chat-Id`, `X-Message-Id` | public | yes |
+| `email` | `create_draft`, `update_draft`, `get_draft`, `list_drafts`, `discard_draft`, and `send_draft` when `MAIL_MCP_ALLOW_SEND` is on | `MAIL_MCP_URL` (`http://mail-service:8000/mcp`) | bearer `MAIL_MCP_API_KEY`; headers `X-User-Email`, `X-Chat-Id`, `X-Message-Id` | public | yes |
 | `qdts` | `lookup_entities`, `get_entity`, `search_cases`, `search_notes`, `search_tasks`, `aggregate_records`, `get_cases`, `get_records` | `QDTS_MCP_V2_URL` (`http://qdts-cases:8000/mcp/v2`) | shared bearer `QDTS_MCP_API_KEY`; no identity headers | public | yes |
 | `path` | `path_search_records`, `path_get_record_status`, `path_get_record_details`, `path_get_record_history`, `path_get_records`, `path_count_records`, `path_get_activity`, `path_get_filter_values`, `path_lookup_employees` | `PATH_MCP_URL` | bearer `PATH_MCP_API_KEY` only if set | public | yes |
 | `employee_directory_write` | `search_employees`, `get_employee`, `create_employee`, `update_employee`, `delete_employee` | `EMPLOYEE_WRITE_MCP_URL` | bearer `EMPLOYEE_WRITE_MCP_API_KEY` (required) | admin | **no** |
@@ -181,7 +181,7 @@ exposed through MCP. Two instances share one SQLite file (the read instance migr
 
 ### Mail
 
-The `mail` connection is the model channel of the mail service: create, update, get, list and discard a draft, and
+The `email` connection (formerly `mail`, renamed so it is not confused with the PATH mail-room records) is the model channel of the mail service: create, update, get, list and discard a draft, and
 **`send_draft` only when the service runs with `MAIL_MCP_ALLOW_SEND=true`** (below). By default it has no send tool.
 It sends the bearer key `MAIL_MCP_API_KEY` and the identity headers `X-User-Email`, `X-Chat-Id`
 and `X-Message-Id`, which Open WebUI fills per call. The service derives the From address from the user, never from
@@ -197,7 +197,7 @@ addresses only, audit `via` `mcp:header`). `send_draft(draft_id, version?)` fail
 read it, and refuses a draft that suggests attachments (only the review form can upload files, so model-sent mail
 carries none). `mcp.json` lists `send_draft` in the connection's `function_name_filter_list` but not in the tools that
 verification requires, so verification passes with sending off and the model gets the tool only when the service
-offers it. The rule for *when* a model may send is behavioural, not technical: the `mail-drafting` skill and the Lenny
+offers it. The rule for *when* a model may send is behavioural, not technical: the `email` skill and the Lenny
 prompt say to send only when the user explicitly says to (or a scheduled automation's prompt does),
 and to report "sent" only from `send_draft` or `get_draft`. Anyone holding the shared `MAIL_MCP_API_KEY` can send as
 any user while this is on, so keep the key private and the service on the internal network. Turn it off by setting
@@ -206,7 +206,7 @@ any user while this is on, so keep the key private and the service on the intern
 relay, so send was verified only through those tests, not by sending real mail.
 
 **Automations.** Open WebUI automations run the full chat pipeline as the automation's owner with the preset's own tool
-list (`meta.toolIds`, so Lenny's scheduled run has the `mail` connection and `send_draft`), the owner's identity in the
+list (`meta.toolIds`, so Lenny's scheduled run has the `email` connection and `send_draft`), the owner's identity in the
 `{{USER_EMAIL}}` header, and no terminal unless the preset sets one (charts then use the render service,
 [tools.md](tools.md#visuals-toolkit)). A scheduled prompt has nobody to ask, so it must name the recipients, say what the
 mail contains and say to send it; the skill tells the model to send nothing when a recipient is missing or ambiguous.

@@ -29,7 +29,7 @@ def write_doc(tmp, doc):
 
 class InventoryTests(unittest.TestCase):
     def test_shipped_inventory_is_valid(self):
-        self.assertEqual(set(BY_ID), {'doctranslator', 'employee_directory', 'mail', 'qdts', 'path', 'employee_directory_write'})
+        self.assertEqual(set(BY_ID), {'doctranslator', 'employee_directory', 'email', 'qdts', 'path', 'employee_directory_write'})
         self.assertFalse(BY_ID['employee_directory_write']['enabled'])
         self.assertEqual(BY_ID['employee_directory_write']['access'], {'type': 'admin'})
 
@@ -124,16 +124,16 @@ class ConnectionTests(unittest.TestCase):
         self.assertEqual(want('path', {'PATH_MCP_API_KEY': '  '})['auth_type'], 'none')
 
     def test_mail_connection_sends_identity_headers_and_key(self):
-        c = want('mail', {'MAIL_MCP_API_KEY': 'k-mail'})
+        c = want('email', {'MAIL_MCP_API_KEY': 'k-mail'})
         self.assertEqual((c['url'], c['auth_type'], c['key']), ('http://mail-service:8000/mcp', 'bearer', 'k-mail'))
         self.assertEqual(c['headers'], {'X-User-Email': '{{USER_EMAIL}}', 'X-Chat-Id': '{{CHAT_ID}}', 'X-Message-Id': '{{MESSAGE_ID}}'})
         self.assertEqual(c['config']['function_name_filter_list'], 'create_draft,update_draft,get_draft,list_drafts,discard_draft,send_draft')
-        self.assertNotIn('send', ','.join(BY_ID['mail']['tools']))
+        self.assertNotIn('send', ','.join(BY_ID['email']['tools']))
         with self.assertRaisesRegex(m.ConfigError, 'MAIL_MCP_API_KEY'):
-            want('mail', {})
+            want('email', {})
 
     def test_the_model_may_be_offered_send_draft_but_the_service_must_not_be_required_to_list_it(self):
-        mail = BY_ID['mail']
+        mail = BY_ID['email']
         self.assertIn('send_draft', mail['function_name_filter_list'])  # allowed through when the service has it on
         self.assertNotIn('send_draft', mail['tools'])                  # verification still passes with sending off
         self.assertEqual(set(mail['tools']) | {'send_draft'}, set(mail['function_name_filter_list']))

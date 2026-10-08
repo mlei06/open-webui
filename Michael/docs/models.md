@@ -27,7 +27,7 @@ selector).
 |---|:-:|:-:|:-:|:-:|:-:|:-:|
 | QDTS cases (`qdts`) | x | x | | | | |
 | PATH (`path`) | x | | x | | | |
-| Mail drafts (`mail`) and the review-and-send action | x | | | | | |
+| Email (`email`) and the review-and-send action | x | | | | | |
 | Translator gateway (`doctranslator`) and Document Translator tool | x | | | x | | |
 | PowerPoint (`generate_slide_pptx`) and Word (`generate_docx_documents`) generators | x | | | | | x |
 | Visuals toolkit (`visuals_toolkit_v4`) | x | x | | | | |
@@ -152,6 +152,12 @@ blocks and images stripped), sends it to the task model, reads the `follow_ups` 
 `}` of the reply (falling back to `reasoning_content`), pushes it to the browser and saves it on the message as
 `followUps`. Unparsable output is dropped silently. Automations and delegated agents have no browser, so they get none.
 
+The committed template (`models/follow-up-prompt.md`, pushed by `presets.py`) asks for 3 suggestions of different kinds that
+fit the conversation: deeper data dive, visualization, deck or document, email (not every time), a recurring version
+("Send me this every Monday"), translation and web context. After a document or deck it must include a recurring version.
+It never suggests anything about the assistant itself, and it has
+a short role line for each narrower preset because the single global template cannot vary per preset.
+
 The task model is the chat's own model unless `TASK_MODEL` or `TASK_MODEL_EXTERNAL` is set; both are empty here, so for
 Lenny the call goes to the Lenny preset and carries its system prompt (no tools, no function filters). Each reply
 therefore costs one extra call on the main model; pointing `TASK_MODEL_EXTERNAL` at a smaller model would cut that.
@@ -226,9 +232,7 @@ shared-prompt include mechanism: policy repeated in several prompts must be revi
 
 - **Lenny** and **Case Assistant** carry no tool usage guides. Lenny's prompt is its identity (an internal assistant
   built by Michael Lei, in alpha testing), its purpose (answer questions about cases, products, employees, teams and
-  customers by crunching the data and showing the result as a table or chart), a feedback rule (for a bug, a missing
-  feature or feedback, offer to draft an email to the maintainer, drafted by default and sent only on request), the
-  `<user_context>` block, an honesty
+  customers by crunching the data and showing the result as a table or chart), the `<user_context>` block, an honesty
   rule (answer from tool results, say plainly when the data cannot answer, "no data" is not "zero", label inference, say
   which data and limits an answer rests on), the answer style, the list of skills with when to use each, one paragraph on when to delegate (short jobs
   itself; tool-heavy or background jobs, or on request, to specialist agents), and three rules (tool and agent
@@ -241,6 +245,27 @@ shared-prompt include mechanism: policy repeated in several prompts must be revi
 - The three SOP-enabled presets (Document Translator, Web Searcher, Office
   Documents) inherit `knowledge_bases: ["sops"]`, and `desired_model()` turns on the knowledge built-in for them even
   if their own `builtin_tools` omits it.
+
+### What the first request costs (Lenny)
+
+A request with no history sent about 57k prompt tokens before the 2026-10-07 trim and about 34k after. The system prompt is
+only about 1k of that; the rest is the tool schemas, so that is where to cut. Sizes of the published specs (characters; divide
+by about 3.7 for tokens), after the trim unless noted:
+
+| Source | Chars | Notes |
+|---|---:|---|
+| QDTS (8 tools) | 46,900 | was 95,100: `compact_schema` in devqdts `v2_server.py` drops titles, length limits, null branches and repeated descriptions; `aggregate_records` alone was 45,100 |
+| Open Terminal tools (16) | about 19,800 | upstream; `grep_search`, `glob_search`, `get_process_status` are the largest |
+| Visuals toolkit (20 tools) | 17,800 | `render_visualization` 2,600 and `export_visual` 2,000 are the largest; 17 small `render_*` tools make up the rest |
+| PATH (9 tools) | 15,100 | `path_search_records` 4,300 and `path_count_records` 4,000 |
+| Built-in tools (time, ask_user, web, files, memory, chats, tasks, automations) | roughly 8,000 to 12,000 | depends on the preset's `builtinTools` |
+| Email (5 tools) | 4,800 | |
+| `generate_slides` + `get_slide_layouts` | 4,500 | was 9,700: the legacy layout list was cut from the docstring |
+| Translator MCP + tool | 5,900 | |
+| Word generator, workspace files, delegation | 7,700 | |
+
+Nothing was removed from the tool list; only descriptions and schema metadata were trimmed. The published schema is
+advisory (the server validates every call against its own models), so a smaller schema does not loosen validation.
 
 ### Editing and refreshing a running stack
 

@@ -14,7 +14,7 @@ model loads on demand with Open WebUI's `view_skill` tool.
 | `web-search` | Parent: when to delegate and how to write a safe query. Agent: `search_web`, `fetch_url`, sourcing | Lenny briefs, Web Searcher works |
 | `document-translation` | Parent: the hand-over. Agent: `translate_attachment`, `deliver_translation`, status, cancel | Lenny briefs, Document Translator works |
 | `powerpoint` | Parent: the brief. Agent: `get_slide_layouts`, `generate_slides`, charts, tables, images, Word; editing an existing deck in the terminal with python-pptx (tested recipe); showing every deck inline with `display_file` | Lenny briefs, Office Documents works |
-| `mail-drafting` | Drafts, recipients, attachments through `prepare_email_attachments`; the review-form default; sending with `send_draft` only on an explicit instruction (and in automations) | Lenny |
+| `email` | Drafts, recipients, attachments through `prepare_email_attachments`; the review-form default; sending with `send_draft` only on an explicit instruction (and in automations) | Lenny |
 | `path-mailroom` | The nine read-only PATH tools and what the records mean | Lenny |
 | `terminal-workspace` | Workspace layout, download links, command rules | Lenny, Case Assistant |
 

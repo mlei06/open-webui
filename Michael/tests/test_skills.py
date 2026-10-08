@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / 'bootstrap'))
 import skills as sk  # noqa: E402
 
 EXPECTED = {'qdts', 'visualization', 'delegation', 'powerpoint', 'document-translation', 'web-search',
-            'mail-drafting', 'path-mailroom', 'terminal-workspace'}
+            'email', 'path-mailroom', 'terminal-workspace'}
 TOOL_DETAIL = ('search_cases', 'aggregate_records', 'lookup_entities', 'get_cases', 'get_records', 'generate_slides',
                'generate_document', 'render_visualization', 'render_chart', 'export_visual', 'translate_attachment',
                'delegate_agents', 'search_web', 'fetch_url', 'path_search_records', 'create_draft')
@@ -60,7 +60,7 @@ class DeclaredSkills(unittest.TestCase):
                                 'powerpoint': ('get_slide_layouts', 'generate_slides', 'headers', 'terminal_image_path'),
                                 'document-translation': ('translate_attachment', 'deliver_translation', 'cancel_translation'),
                                 'web-search': ('search_web', 'fetch_url'),
-                                'mail-drafting': ('create_draft', 'prepare_email_attachments', 'suggested_attachment_ids', 'send_draft'),
+                                'email': ('create_draft', 'prepare_email_attachments', 'suggested_attachment_ids', 'send_draft'),
                                 'path-mailroom': ('path_lookup_employees', 'path_count_records'),
                                 'terminal-workspace': ('publish_workspace_file', 'import_attachment')}.items():
             for tool in tools:
@@ -142,7 +142,7 @@ class MinimalPrompts(unittest.TestCase):
         return (ROOT / 'prompts' / name).read_text()
 
     def test_lenny_and_case_assistant_hold_role_style_and_pointers_not_tool_guides(self):
-        for name, limit in (('lenny.md', 4500), ('case-assistant.md', 3200)):
+        for name, limit in (('lenny.md', 5000), ('case-assistant.md', 3200)):
             text = self.prompt(name)
             self.assertLess(len(text), limit, name)
             for detail in TOOL_DETAIL:
@@ -165,11 +165,11 @@ class MinimalPrompts(unittest.TestCase):
         lenny = next(m for m in json.loads((ROOT / 'models' / 'presets.json').read_text())['presets'] if m['id'] == 'lenny')
         tools = {list(t.values())[0] for t in lenny['tools']}
         self.assertLessEqual({'doctranslator', 'document_translator', 'generate_slide_pptx', 'generate_docx_documents',
-                              'visuals_toolkit_v4', 'delegate_agents', 'qdts', 'mail', 'path', 'workspace_files'}, tools)
+                              'visuals_toolkit_v4', 'delegate_agents', 'qdts', 'email', 'path', 'workspace_files'}, tools)
         self.assertTrue(lenny['capabilities']['web_search'] and 'web_search' in lenny['builtin_tools'])
 
     def test_sending_mail_needs_an_explicit_instruction_everywhere_it_is_taught(self):
-        skill = declared()['mail-drafting']['content']
+        skill = declared()['email']['content']
         for needle in ('only', 'explicitly tells you to send', 'automation', 'do not send', 'cannot carry attachments', 'once'):
             self.assertIn(needle, skill, needle)
         self.assertIn('default is to draft for the user to review', skill)
@@ -186,12 +186,13 @@ class MinimalPrompts(unittest.TestCase):
         for needle in ('never a bare file name', 'never build one from scratch with python-pptx', 'native chart', 'never type `•`', 'Section Header_White', 'every new deck', 'layout_adjustments', 'You CAN edit a deck', 'exact `workspace_path` of the latest result', 'display_file', 'inline: true'):
             self.assertIn(needle, deck, needle)
 
-    def test_lenny_offers_to_draft_feedback_to_michael_and_never_sends_it_unprompted(self):
+    def test_lenny_prompt_states_the_rules_the_model_skips(self):
         text = (ROOT / 'prompts' / 'lenny.md').read_text()
-        self.assertIn('mlei4@lenovo.com', text)
-        for needle in ('bug', 'feature', 'draft an email to Michael', 'draft it by default', 'send it only if the user says to', 'without pasting case text'):
+        self.assertNotIn('mlei4@lenovo.com', text)       # the feedback-to-maintainer offer was dropped
+        for needle in ('built by Michael Lei', 'alpha testing', 'display_file', 'inline true', 'never regenerate it', 'exact workspace_path',
+                       'Automations:', 'self-contained', 'relative periods', 'ask_user', 'pause or change',
+                       '- email:', 'powerpoint skill again'):
             self.assertIn(needle, text, needle)
-        self.assertIn('built by Michael Lei', text); self.assertIn('alpha testing', text)
 
     def test_the_delegation_skill_says_when_to_delegate_and_when_not_to(self):
         content = declared()['delegation']['content']

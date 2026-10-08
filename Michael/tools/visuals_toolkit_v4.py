@@ -2483,8 +2483,7 @@ pre.vis{{
         theme "light" for a white background when the image goes onto a slide or a document. To put the
         image in a deck, pass the returned workspace_path as terminal_image_path on a generate_slides
         slide that uses template_layout "Chart Slide" with image_fit "contain".
-        The inline chart is the primary preview. Never repeat it as a Markdown image.
-        Return a plain download link per artifact, preferring download_url and using terminal_download_url only
+        Return one download URL per artifact, preferring download_url and using terminal_download_url only
         as a fallback for a verified Terminal copy. Keep workspace_path internally; show it only for an
         explicit Terminal save/open/edit/reuse request. An Open Terminal is optional: without one the image is delivered as a download only (the result's file_id works as image_file_id on a slide).
 

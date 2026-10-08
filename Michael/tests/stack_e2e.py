@@ -164,7 +164,7 @@ def main():
         report(f'server:mcp:{ref}' in visible, f'tool server {ref} is usable by a non-admin user')
     ids = {m['id']: m for m in call(stack.base, 'GET', '/api/models', plain['token'])['data']}
     lenny_tools = set(((ids['lenny'].get('info') or {}).get('meta') or {}).get('toolIds', []))
-    report(lenny_tools >= {f'server:mcp:{s}' for s in ('doctranslator', 'employee_directory', 'mail')} | {'document_translator', 'generate_slide_pptx', 'generate_docx_documents', 'knowledge_base_manager'}, 'Lenny carries every tool')
+    report(lenny_tools >= {f'server:mcp:{s}' for s in ('doctranslator', 'employee_directory', 'email')} | {'document_translator', 'generate_slide_pptx', 'generate_docx_documents', 'knowledge_base_manager'}, 'Lenny carries every tool')
 
     # --- knowledge: read, write, privacy ------------------------------------------------------
     kbs = list_knowledge_bases(stack.base, plain['token'])

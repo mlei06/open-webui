@@ -1,11 +1,11 @@
 ---
-name: Mail drafting
-description: How to draft an email for the user to review, and when (only on an explicit instruction) to send it yourself with send_draft, including for scheduled automations and attachments. Load it before creating, updating or sending a draft.
+name: Email
+description: How to write, edit and send email for the user with the email tools (drafts the user reviews by default; send_draft only on an explicit instruction or in a scheduled automation), including recipients and attachments. Load it before writing or sending any email. Not for packages or mail-room records.
 ---
 
-# Mail drafting and sending
+# Email: drafting and sending
 
-The mail tools are `create_draft`, `update_draft`, `get_draft`, `list_drafts`, `discard_draft` and, when the mail service has sending enabled, `send_draft`. **The default is to draft for the user to review**: they check it in the **Review and send email** form and press Send. If `send_draft` is not among your tools, sending by a model is switched off: leave the draft and tell the user to press the button.
+The email tools are `create_draft`, `update_draft`, `get_draft`, `list_drafts`, `discard_draft` and, when the mail service has sending enabled, `send_draft`. **The default is to draft for the user to review**: they check it in the **Review and send email** form and press Send. If `send_draft` is not among your tools, sending by a model is switched off: leave the draft and tell the user to press the button.
 
 ## When you may send
 

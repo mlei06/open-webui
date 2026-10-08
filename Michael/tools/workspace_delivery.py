@@ -359,6 +359,11 @@ def _delivery_message(filename, download_url=None, terminal_url=None, error=None
     return f'[{filename}]({primary})' if primary else error or 'No download URL is available.'
 
 
+_NEXT_STEPS = ('Show the file now: call display_file with path=workspace_path and inline=true (for a deck, page=the first slide). '
+               'To change it later, edit that exact workspace_path in the terminal (see the powerpoint skill) and save a new '
+               'name; do not regenerate it.')
+
+
 def _office_result(filename, url=None, file_id=None, *, workspace_path=None,
                    terminal_requested=False, warning=None, error=None, terminal_id=None, size=None):
     status = 'error' if error else 'partial_success' if warning else 'success'
@@ -373,6 +378,7 @@ def _office_result(filename, url=None, file_id=None, *, workspace_path=None,
         'warnings': [warning] if warning else [], 'error': error,
         'message': message,
         'instructions': _DELIVERY_INSTRUCTIONS,
+        **({'next_steps': _NEXT_STEPS} if workspace_path and not error else {}),
     }, ensure_ascii=False)
 
 

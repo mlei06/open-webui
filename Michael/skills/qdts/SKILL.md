@@ -172,7 +172,7 @@ Use `case_current_owner` instead to answer "who owns the most right now". One ca
 There is no semantic clustering. Search `search_cases(filters: {product: "X"}, sort: "created_newest", limit: 50)`, read titles and summary snippets, and name recurring themes as your reading of that sample (say how many of `total` you looked at). Confirm any theme's size with a keyword count: `search_cases(filters: {product: "X", query: "theme words"}, limit: 0)`.
 
 **13. "Who is the best person to contact about wifi on ThinkPads?"**
-`aggregate_records` on `case_participant` with `query: "wifi wireless"`, `query_mode: "any"` and `product: "thinkpad"`; then, for the top two, `lookup_entities` for the itcode/email and `get_entity` for their usual team. Name the best contact only when they rank high; mention the runner-up and the case counts. Offer to draft a mail (see the **mail-drafting** skill).
+`aggregate_records` on `case_participant` with `query: "wifi wireless"`, `query_mode: "any"` and `product: "thinkpad"`; then, for the top two, `lookup_entities` for the itcode/email and `get_entity` for their usual team. Name the best contact only when they rank high; mention the runner-up and the case counts. Offer to draft a mail (see the **email** skill).
 
 ## Anti-patterns that waste calls or give wrong answers
 
